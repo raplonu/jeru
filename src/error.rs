@@ -1,0 +1,42 @@
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("could not determine home directory")]
+    NoHomeDir,
+
+    #[error("could not determine cache directory")]
+    NoCacheDir,
+
+    #[error("no project given and no current project set (use `jeru workon <name>`)")]
+    NoCurrentProject,
+
+    #[error("project '{0}' not found")]
+    ProjectNotFound(String),
+
+    #[error("project '{0}' has no repos")]
+    NoRepos(String),
+
+    #[error("no manifest (project.yml or project.yaml) found in {0}")]
+    ManifestNotFound(String),
+
+    #[error("{0} already exists (refusing to overwrite)")]
+    AlreadyExists(String),
+
+    #[error("{0}: existing settings.json is not a JSON object")]
+    InvalidSettings(String),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error("failed to parse manifest: {0}")]
+    Yaml(#[from] serde_yaml_ng::Error),
+
+    #[error("failed to handle settings JSON: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("failed to render template: {0}")]
+    Template(#[from] minijinja::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
