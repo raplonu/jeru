@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::constants::CLAUDE_BIN;
 use crate::error::{Error, Result};
 use crate::project::{expand_tilde, load_manifest, project_dir};
 use crate::settings::additional_directories;
-
-const CLAUDE_BIN: &str = "claude";
 
 fn claude_command(cwd: PathBuf, add_dirs: &[String], extra: &[String]) -> Command {
     let mut cmd = Command::new(CLAUDE_BIN);

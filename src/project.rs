@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use crate::cache;
+use crate::config::Config;
+use crate::constants::CLAUDE_MD_FILE;
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::template;
@@ -12,10 +14,9 @@ pub struct Project {
     pub path: PathBuf,
 }
 
-/// Root of the project tree. Hardcoded to `~/project` for now.
+/// Root of the project tree.
 pub fn projects_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
-    Ok(home.join("project"))
+    Ok(Config::load()?.projects_dir)
 }
 
 /// Directory for a single named project under the project tree.
@@ -35,10 +36,9 @@ pub fn expand_tilde(path: &str) -> Result<String> {
     Ok(home.join(rest).to_string_lossy().into_owned())
 }
 
-/// Directory a knowledge set ID resolves to. Hardcoded to `~/knowledge/<id>`.
+/// Directory a knowledge set ID resolves to.
 pub fn knowledge_dir(id: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
-    Ok(home.join("knowledge").join(id))
+    Ok(Config::load()?.knowledge_dir.join(id))
 }
 
 /// Set a project as the current one for subsequent commands.
@@ -66,7 +66,7 @@ pub fn load_manifest(name: &str) -> Result<Manifest> {
 /// path written.
 pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
     let manifest = load_manifest(name)?;
-    let dest = project_dir(name)?.join("CLAUDE.md");
+    let dest = project_dir(name)?.join(CLAUDE_MD_FILE);
     if dest.exists() && !force {
         return Err(Error::AlreadyExists(dest.to_string_lossy().into_owned()));
     }

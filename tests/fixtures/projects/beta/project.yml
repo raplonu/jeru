@@ -1,0 +1,10 @@
+name: beta
+primary_repo: ~/code/beta-main
+knowledge_sets:
+  - docs
+  - notes
+repos:
+  - ~/code/beta-main
+  - ~/code/beta-api
+resources:
+  - ~/refs/beta

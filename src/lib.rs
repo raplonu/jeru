@@ -1,4 +1,6 @@
 pub mod cache;
+pub mod config;
+pub mod constants;
 pub mod error;
 pub mod launch;
 pub mod manifest;
@@ -8,6 +10,7 @@ pub mod template;
 pub mod vscode;
 
 pub use cache::{current_project, resolve_project, set_current_project};
+pub use config::Config;
 pub use error::{Error, Result};
 pub use launch::{claude_for_project, claude_for_repos};
 pub use manifest::Manifest;

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+use crate::constants::{ADDITIONAL_DIRS_KEY, CLAUDE_DIR, SETTINGS_FILE};
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::project::{expand_tilde, knowledge_dir, load_manifest, project_dir};
@@ -39,9 +40,9 @@ pub fn write_settings(name: &str) -> Result<PathBuf> {
     let manifest = load_manifest(name)?;
     let dirs = additional_directories(&manifest)?;
 
-    let claude_dir = project_dir(name)?.join(".claude");
+    let claude_dir = project_dir(name)?.join(CLAUDE_DIR);
     std::fs::create_dir_all(&claude_dir)?;
-    let path = claude_dir.join("settings.json");
+    let path = claude_dir.join(SETTINGS_FILE);
 
     let mut root = if path.exists() {
         let value: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
@@ -59,7 +60,7 @@ pub fn write_settings(name: &str) -> Result<PathBuf> {
     if !permissions.is_object() {
         return Err(Error::InvalidSettings(path.to_string_lossy().into_owned()));
     }
-    permissions["additionalDirectories"] = json!(dirs);
+    permissions[ADDITIONAL_DIRS_KEY] = json!(dirs);
 
     let mut content = serde_json::to_string_pretty(&Value::Object(root))?;
     content.push('\n');

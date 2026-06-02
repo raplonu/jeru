@@ -37,6 +37,9 @@ pub enum Error {
 
     #[error("failed to render template: {0}")]
     Template(#[from] minijinja::Error),
+
+    #[error("invalid configuration: {0}")]
+    Config(#[from] figment::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -3,14 +3,13 @@ use std::process::Command;
 
 use serde_json::json;
 
+use crate::constants::{CODE_BIN, WORKSPACE_EXT};
 use crate::error::{Error, Result};
 use crate::project::{expand_tilde, load_manifest, project_dir};
 
-const CODE_BIN: &str = "code";
-
 /// Path of the project's generated `.code-workspace` file.
 pub fn workspace_path(name: &str) -> Result<PathBuf> {
-    Ok(project_dir(name)?.join(format!("{name}.code-workspace")))
+    Ok(project_dir(name)?.join(format!("{name}{WORKSPACE_EXT}")))
 }
 
 /// Generate the VSCode workspace for a project, listing its repos as folders.

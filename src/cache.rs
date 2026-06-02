@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
+use crate::config::Config;
+use crate::constants::CURRENT_PROJECT_FILE;
 use crate::error::{Error, Result};
 
-/// Cache directory for jeru state, under the user's cache dir.
 fn cache_dir() -> Result<PathBuf> {
-    let dir = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
-    Ok(dir.join("jeru"))
+    Ok(Config::load()?.cache_dir)
 }
 
 fn current_project_file() -> Result<PathBuf> {
-    Ok(cache_dir()?.join("current_project"))
+    Ok(cache_dir()?.join(CURRENT_PROJECT_FILE))
 }
 
 /// The project currently being worked on, if any.

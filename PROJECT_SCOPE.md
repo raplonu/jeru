@@ -7,7 +7,7 @@ A terminal UI tool (Rust) for managing a personal **project tree**. Each project
 ## Core Concepts
 
 ### Project
-A logical unit defined by a manifest (`project.yml`) living in its own directory under a project tree (e.g. `projects/<name>/`). A project may be a coding project (has repos) or not (knowledge/docs or ressources/ only).
+A logical unit defined by a manifest (`project.yml`) living in its own directory under a project tree (e.g. `project/<name>/`). A project may be a coding project (has repos) or not (knowledge/docs or ressources/ only).
 
 ### Knowledge Set
 A reusable, self-contained body of reference material (Markdown + YAML frontmatter), stored centrally in one place (`knowledge/<id>/`, with an `index.md` entry point). Knowledge is the **single source of truth** — projects only *reference* sets by ID, never copy them. The relationship is **N:N**: many projects can link the same set, one project can link many sets. Knowledge is synced across machines via **Syncthing** (so the tool does not handle sync, but should support checking/reverting changes — git underneath).
