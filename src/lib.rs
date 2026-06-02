@@ -3,6 +3,7 @@ pub mod cache;
 pub mod config;
 pub mod constants;
 pub mod remote;
+pub mod roadmap;
 pub mod error;
 pub mod launch;
 pub mod manifest;

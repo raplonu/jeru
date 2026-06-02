@@ -17,6 +17,9 @@ pub const WORKSPACE_EXT: &str = ".code-workspace";
 pub const CACHE_DIR_NAME: &str = "jeru";
 pub const CURRENT_PROJECT_FILE: &str = "current_project";
 
+// Default roadmap filename inside a project directory
+pub const ROADMAP_FILE: &str = "ROADMAP.md";
+
 // External binaries
 pub const CLAUDE_BIN: &str = "claude";
 pub const CODE_BIN: &str = "code";

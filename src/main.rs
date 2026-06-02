@@ -61,6 +61,13 @@ enum Command {
         #[arg(last = true)]
         extra: Vec<String>,
     },
+    /// Show, edit, or manage the project roadmap
+    Roadmap {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<RoadmapAction>,
+    },
     /// Print a shell completion script to stdout
     Completions {
         /// Target shell
@@ -84,6 +91,29 @@ enum KindArg {
     Repo,
     Knowledge,
     Resource,
+}
+
+#[derive(Subcommand)]
+enum RoadmapAction {
+    /// Open the roadmap in $EDITOR
+    Edit {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+    },
+    /// Point this project at a roadmap file outside the project directory
+    Link {
+        /// Path to the roadmap file
+        path: String,
+        /// Project name; defaults to the current project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Remove the custom roadmap path (revert to default ROADMAP.md)
+    Unlink {
+        /// Project name; defaults to the current project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
 }
 
 impl From<KindArg> for Kind {
@@ -151,6 +181,7 @@ fn main() {
             generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
             return;
         }
+        Command::Roadmap { name, action } => run_roadmap(name, action),
         Command::Add { path, kind, project } => run_add(project, path, kind),
     };
 
@@ -330,6 +361,31 @@ fn run_claude_open(name: Option<String>, extra: Vec<String>, target: Target) -> 
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn run_roadmap(name: Option<String>, action: Option<RoadmapAction>) -> jeru::Result<()> {
+    match action {
+        None => {
+            let name = jeru::resolve_project(name)?;
+            jeru::roadmap::show(&name)
+        }
+        Some(RoadmapAction::Edit { name }) => {
+            let name = jeru::resolve_project(name)?;
+            jeru::roadmap::edit(&name)
+        }
+        Some(RoadmapAction::Link { path, project }) => {
+            let name = jeru::resolve_project(project)?;
+            jeru::roadmap::link(&name, &path)?;
+            println!("Roadmap linked to {path}");
+            Ok(())
+        }
+        Some(RoadmapAction::Unlink { project }) => {
+            let name = jeru::resolve_project(project)?;
+            jeru::roadmap::unlink(&name)?;
+            println!("Custom roadmap path removed; using ROADMAP.md");
+            Ok(())
+        }
+    }
 }
 
 fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru::Result<()> {

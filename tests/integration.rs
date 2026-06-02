@@ -2,6 +2,7 @@ mod common;
 
 use common::TestEnv;
 use jeru::Kind;
+use std::fs;
 
 // ── project listing ──────────────────────────────────────────────────────────
 
@@ -198,4 +199,60 @@ fn detect_kind_file_extension_is_resource() {
         jeru::detect_kind("~/notes/spec.md").unwrap(),
         Kind::Resource
     );
+}
+
+// ── roadmap ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn roadmap_default_path_is_in_project_dir() {
+    let env = TestEnv::setup();
+    let path = jeru::roadmap::effective_path("alpha").unwrap();
+    assert_eq!(path, env.project_dir("alpha").join("ROADMAP.md"));
+}
+
+#[test]
+fn roadmap_link_stores_path_in_manifest() {
+    let _env = TestEnv::setup();
+    jeru::roadmap::link("alpha", "~/notes/alpha-roadmap.md").unwrap();
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert_eq!(m.roadmap.as_deref(), Some("~/notes/alpha-roadmap.md"));
+}
+
+#[test]
+fn roadmap_unlink_clears_path() {
+    let _env = TestEnv::setup();
+    jeru::roadmap::link("alpha", "~/notes/alpha-roadmap.md").unwrap();
+    jeru::roadmap::unlink("alpha").unwrap();
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert!(m.roadmap.is_none());
+}
+
+#[test]
+fn roadmap_link_changes_effective_path() {
+    let env = TestEnv::setup();
+    let custom = env.dir.path().join("notes/alpha-roadmap.md");
+    let custom_str = custom.to_string_lossy().into_owned();
+    jeru::roadmap::link("alpha", &custom_str).unwrap();
+    assert_eq!(jeru::roadmap::effective_path("alpha").unwrap(), custom);
+}
+
+#[test]
+fn init_claude_md_includes_roadmap_when_file_exists() {
+    let env = TestEnv::setup();
+    // Create a ROADMAP.md in the project dir
+    let roadmap = env.project_dir("alpha").join("ROADMAP.md");
+    fs::write(&roadmap, "## Goals\n- [ ] do something\n").unwrap();
+
+    let path = jeru::init_claude_md("alpha", false).unwrap();
+    let content = fs::read_to_string(path).unwrap();
+    assert!(content.contains("ROADMAP.md"));
+    assert!(content.contains("Roadmap"));
+}
+
+#[test]
+fn init_claude_md_no_roadmap_section_when_file_missing() {
+    let _env = TestEnv::setup();
+    let path = jeru::init_claude_md("alpha", false).unwrap();
+    let content = fs::read_to_string(path).unwrap();
+    assert!(!content.contains("Roadmap"));
 }

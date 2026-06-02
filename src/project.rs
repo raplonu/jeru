@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::constants::CLAUDE_MD_FILE;
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
+use crate::roadmap;
 use crate::template;
 
 /// A project: a directory living under the project tree.
@@ -70,7 +71,8 @@ pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
     if dest.exists() && !force {
         return Err(Error::AlreadyExists(dest.to_string_lossy().into_owned()));
     }
-    let rendered = template::render_claude_md(&manifest)?;
+    let roadmap = roadmap::claude_md_path(&manifest, name)?;
+    let rendered = template::render_claude_md(&manifest, roadmap.as_deref())?;
     std::fs::write(&dest, rendered)?;
     Ok(dest)
 }
