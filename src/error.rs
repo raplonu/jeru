@@ -40,6 +40,15 @@ pub enum Error {
 
     #[error("invalid configuration: {0}")]
     Config(#[from] figment::Error),
+
+    #[error("SSH command failed for '{0}'")]
+    RemoteSsh(String),
+
+    #[error("mutagen error: {0}")]
+    Mutagen(String),
+
+    #[error("path '{0}' is not under the home directory and cannot be mapped to a remote path")]
+    PathNotUnderHome(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

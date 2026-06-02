@@ -2,6 +2,7 @@ pub mod add;
 pub mod cache;
 pub mod config;
 pub mod constants;
+pub mod remote;
 pub mod error;
 pub mod launch;
 pub mod manifest;
