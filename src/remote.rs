@@ -10,6 +10,8 @@ use crate::project::{expand_tilde, knowledge_dir, project_dir};
 pub struct SyncOptions {
     pub knowledge: bool,
     pub resources: bool,
+    /// Sync only repos; skip the project directory, knowledge sets, and resources.
+    pub repos_only: bool,
 }
 
 /// One local ↔ remote directory pair managed by a mutagen session.
@@ -71,7 +73,7 @@ pub fn build_sync_pairs(
     let local_home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
     let mut pairs = Vec::new();
 
-    let mut add = |local: PathBuf| -> Result<()> {
+    let mut push = |local: PathBuf| -> Result<()> {
         let rpath = to_remote(&local, &local_home, remote_home)?;
         pairs.push(SyncPair {
             session: session_name(project_name, &local),
@@ -82,25 +84,29 @@ pub fn build_sync_pairs(
         Ok(())
     };
 
-    // Project directory
-    add(project_dir(project_name)?)?;
+    if !opts.repos_only {
+        // Project directory
+        push(project_dir(project_name)?)?;
+    }
 
-    // Repos
+    // Repos — always included
     for repo in &manifest.repos {
-        add(PathBuf::from(expand_tilde(repo)?))?;
+        push(PathBuf::from(expand_tilde(repo)?))?;
     }
 
-    // Knowledge sets
-    if opts.knowledge {
-        for id in &manifest.knowledge_sets {
-            add(knowledge_dir(id)?)?;
+    if !opts.repos_only {
+        // Knowledge sets
+        if opts.knowledge {
+            for id in &manifest.knowledge_sets {
+                push(knowledge_dir(id)?)?;
+            }
         }
-    }
 
-    // Resources
-    if opts.resources {
-        for res in &manifest.resources {
-            add(PathBuf::from(expand_tilde(res)?))?;
+        // Resources
+        if opts.resources {
+            for res in &manifest.resources {
+                push(PathBuf::from(expand_tilde(res)?))?;
+            }
         }
     }
 
@@ -235,6 +241,28 @@ pub fn launch_tmux(
 /// Single-quote a shell argument, escaping any single quotes inside.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Return `(cwd, add_dirs)` for a repos-only remote Claude invocation.
+///
+/// `cwd` is the remote path of the first repo; `add_dirs` are the remaining
+/// repos' remote paths.
+pub fn remote_repos_dirs(
+    manifest: &Manifest,
+    remote_home: &str,
+    local_home: &Path,
+) -> Result<(String, Vec<String>)> {
+    let (first, rest) = manifest
+        .repos
+        .split_first()
+        .ok_or_else(|| crate::error::Error::NoRepos(String::new()))?;
+
+    let cwd = to_remote(&PathBuf::from(expand_tilde(first)?), local_home, remote_home)?;
+    let add_dirs = rest
+        .iter()
+        .map(|r| to_remote(&PathBuf::from(expand_tilde(r)?), local_home, remote_home))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((cwd, add_dirs))
 }
 
 /// Build the list of remote absolute paths for Claude's `--add-dir` flags,

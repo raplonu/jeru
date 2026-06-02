@@ -26,6 +26,9 @@ enum Command {
         /// SSH host to work on remotely (e.g. user@hostname)
         #[arg(long)]
         remote: Option<String>,
+        /// Work only on repos: Claude opens in the first repo, only repos are synced remotely
+        #[arg(long)]
+        repos: bool,
         /// Skip Claude (remote only)
         #[arg(long, requires = "remote")]
         no_claude: bool,
@@ -126,8 +129,8 @@ fn main() {
     let result = match cli.command {
         Command::Ls => run_ls(),
         Command::Use { name } => run_use(&name),
-        Command::Work { name, remote, no_claude, no_knowledge, no_resources, extra } => {
-            run_work(name, remote, no_claude, no_knowledge, no_resources, extra)
+        Command::Work { name, remote, repos, no_claude, no_knowledge, no_resources, extra } => {
+            run_work(name, remote, repos, no_claude, no_knowledge, no_resources, extra)
         }
         Command::Info { name } => run_info(name),
         Command::Claude { action } => match action {
@@ -168,6 +171,7 @@ fn run_use(name: &str) -> jeru::Result<()> {
 fn run_work(
     name: Option<String>,
     remote: Option<String>,
+    repos: bool,
     no_claude: bool,
     no_knowledge: bool,
     no_resources: bool,
@@ -175,24 +179,28 @@ fn run_work(
 ) -> jeru::Result<()> {
     let name = jeru::resolve_project(name)?;
     match remote {
-        None => run_work_local(&name, &extra),
-        Some(host) => run_work_remote(&name, &host, no_claude, no_knowledge, no_resources, &extra),
+        None => run_work_local(&name, repos, &extra),
+        Some(host) => run_work_remote(&name, &host, repos, no_claude, no_knowledge, no_resources, &extra),
     }
 }
 
-fn run_work_local(name: &str, extra: &[String]) -> jeru::Result<()> {
+fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
     // VSCode: generate workspace and spawn non-blocking. Skip if no repos.
     match jeru::write_workspace(name) {
         Ok(workspace) => {
             println!("Wrote {}", workspace.display());
             jeru::code_command(&workspace, &[]).spawn()?;
         }
-        Err(jeru::Error::NoRepos(_)) => {}
+        Err(jeru::Error::NoRepos(_)) if !repos => {}
         Err(e) => return Err(e),
     }
 
-    // Claude Code: run in the foreground.
-    let status = jeru::claude_for_project(name, extra)?.status()?;
+    // Claude Code: repos mode opens in the first repo, otherwise the project dir.
+    let status = if repos {
+        jeru::claude_for_repos(name, extra)?.status()?
+    } else {
+        jeru::claude_for_project(name, extra)?.status()?
+    };
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -202,6 +210,7 @@ fn run_work_local(name: &str, extra: &[String]) -> jeru::Result<()> {
 fn run_work_remote(
     name: &str,
     host: &str,
+    repos: bool,
     no_claude: bool,
     no_knowledge: bool,
     no_resources: bool,
@@ -209,11 +218,15 @@ fn run_work_remote(
 ) -> jeru::Result<()> {
     use jeru::remote::{
         SyncOptions, build_sync_pairs, claude_ssh_cmd, launch_tmux, mutagen_start, mutagen_stop,
-        remote_add_dirs, remote_home, tmux_session_name, vscode_open_remote,
+        remote_add_dirs, remote_home, remote_repos_dirs, tmux_session_name, vscode_open_remote,
     };
 
     let manifest = jeru::load_manifest(name)?;
-    let opts = SyncOptions { knowledge: !no_knowledge, resources: !no_resources };
+    let opts = SyncOptions {
+        knowledge: !no_knowledge,
+        resources: !no_resources,
+        repos_only: repos,
+    };
 
     // Fetch remote home once so all path mapping is consistent.
     eprint!("Connecting to {host} to resolve remote home… ");
@@ -227,16 +240,25 @@ fn run_work_remote(
     println!("Starting {} mutagen session(s)…", pairs.len());
     mutagen_start(&pairs)?;
 
-    // Open VSCode on the remote project directory.
-    let remote_project = &pairs[0].remote_path; // project dir is always first
-    vscode_open_remote(host, remote_project)?;
+    // Determine the remote path that VSCode and Claude will open.
+    let (remote_cwd, claude_add_dirs) = if repos {
+        let (cwd, add_dirs) = remote_repos_dirs(&manifest, &rhome, &local_home)?;
+        (cwd, add_dirs)
+    } else {
+        // Project directory is always the first pair in non-repos mode.
+        let cwd = pairs[0].remote_path.clone();
+        let add_dirs = remote_add_dirs(&manifest, &rhome, &local_home, &opts)?;
+        (cwd, add_dirs)
+    };
+
+    // Open VSCode at the chosen remote directory (non-blocking).
+    vscode_open_remote(host, &remote_cwd)?;
 
     // Build the SSH Claude command (unless --no-claude).
     let claude_cmd = if no_claude {
         None
     } else {
-        let add_dirs = remote_add_dirs(&manifest, &rhome, &local_home, &opts)?;
-        Some(claude_ssh_cmd(host, remote_project, &add_dirs, extra))
+        Some(claude_ssh_cmd(host, &remote_cwd, &claude_add_dirs, extra))
     };
 
     // Launch tmux: blocks until the user closes all windows.
