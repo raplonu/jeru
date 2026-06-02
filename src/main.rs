@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 use dialoguer::{Select, theme::ColorfulTheme};
 
 use jeru::{Kind, Manifest};
@@ -59,6 +60,11 @@ enum Command {
         /// Arguments after `--` are forwarded to code
         #[arg(last = true)]
         extra: Vec<String>,
+    },
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Target shell
+        shell: Shell,
     },
     /// Add a repo, knowledge set, or resource to a project
     Add {
@@ -141,6 +147,10 @@ fn main() {
         },
         Command::Code { name, extra } => run_code(name, extra),
 
+        Command::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
+            return;
+        }
         Command::Add { path, kind, project } => run_add(project, path, kind),
     };
 

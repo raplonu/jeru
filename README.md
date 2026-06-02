@@ -153,6 +153,27 @@ The three base directories can be overridden via environment variables (useful f
 | [`mutagen`](https://mutagen.io) | `work --remote` |
 | [`tmux`](https://github.com/tmux/tmux) | `work --remote` |
 
+## Shell completions
+
+Generate and install a completion script with:
+
+```fish
+# Fish
+jeru completions fish > ~/.config/fish/completions/jeru.fish
+```
+
+```bash
+# Bash
+jeru completions bash > ~/.local/share/bash-completion/completions/jeru
+```
+
+```zsh
+# Zsh
+jeru completions zsh > "${fpath[1]}/_jeru"
+```
+
+`powershell` and `elvish` are also supported.
+
 ## Building
 
 ```
