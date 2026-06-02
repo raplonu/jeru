@@ -38,7 +38,7 @@ Paths kept as-written (absolute or `~`). Knowledge base path configurable (resol
 
 All generated files live **committed inside each project dir** (decided).
 
-1. **VSCode workspace** (`.code-workspace`) — JSON listing all folders (repos + knowledge sets + resources) with friendly names/emoji prefixes.
+1. **VSCode workspace** (`.code-workspace`) — JSON listing all folders (repos + knowledge sets + resources) with friendly names.
 2. **Claude Code config** (`.claude/settings.json`) — populates `additionalDirectories` with all linked folders so Claude Code has access on launch.
 3. **Project `CLAUDE.md`** — a thin briefing doc (see below).
 4. **Repo `CLAUDE.md` starter template** — optional skeleton (build/test/standards sections) for consistency across new repos.

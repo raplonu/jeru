@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestEnv;
+use jeru::Kind;
 
 // ── project listing ──────────────────────────────────────────────────────────
 
@@ -112,9 +113,9 @@ fn write_settings_includes_all_linked_dirs() {
 // ── workon / resolve_project ─────────────────────────────────────────────────
 
 #[test]
-fn workon_sets_current_project() {
+fn use_project_sets_current_project() {
     let _env = TestEnv::setup();
-    jeru::workon("alpha").unwrap();
+    jeru::use_project("alpha").unwrap();
     let current = jeru::current_project().unwrap();
     assert_eq!(current.as_deref(), Some("alpha"));
 }
@@ -122,13 +123,79 @@ fn workon_sets_current_project() {
 #[test]
 fn resolve_project_falls_back_to_current() {
     let _env = TestEnv::setup();
-    jeru::workon("beta").unwrap();
+    jeru::use_project("beta").unwrap();
     let name = jeru::resolve_project(None).unwrap();
     assert_eq!(name, "beta");
 }
 
 #[test]
-fn workon_unknown_project_returns_error() {
+fn use_project_unknown_project_returns_error() {
     let _env = TestEnv::setup();
-    assert!(jeru::workon("ghost").is_err());
+    assert!(jeru::use_project("ghost").is_err());
+}
+
+// ── add_to_project ───────────────────────────────────────────────────────────
+
+#[test]
+fn add_repo_appends_to_manifest() {
+    let _env = TestEnv::setup();
+    jeru::add_to_project("alpha", "~/code/new-repo", Kind::Repo).unwrap();
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert!(m.repos.contains(&"~/code/new-repo".to_string()));
+}
+
+#[test]
+fn add_resource_appends_to_manifest() {
+    let _env = TestEnv::setup();
+    jeru::add_to_project("alpha", "~/docs/spec.md", Kind::Resource).unwrap();
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert!(m.resources.contains(&"~/docs/spec.md".to_string()));
+}
+
+#[test]
+fn add_knowledge_extracts_id() {
+    let env = TestEnv::setup();
+    let knowledge_path = env.dir.path().join("knowledge/ml-notes");
+    std::fs::create_dir_all(&knowledge_path).unwrap();
+    let path_str = knowledge_path.to_string_lossy().into_owned();
+
+    jeru::add_to_project("alpha", &path_str, Kind::Knowledge).unwrap();
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert!(m.knowledge_sets.contains(&"ml-notes".to_string()));
+}
+
+#[test]
+fn add_duplicate_returns_error() {
+    let _env = TestEnv::setup();
+    jeru::add_to_project("alpha", "~/code/dup", Kind::Repo).unwrap();
+    assert!(jeru::add_to_project("alpha", "~/code/dup", Kind::Repo).is_err());
+}
+
+#[test]
+fn detect_kind_knowledge_path() {
+    let env = TestEnv::setup();
+    let kpath = env.dir.path().join("knowledge/docs");
+    std::fs::create_dir_all(&kpath).unwrap();
+    let path_str = kpath.to_string_lossy().into_owned();
+    assert_eq!(jeru::detect_kind(&path_str).unwrap(), Kind::Knowledge);
+}
+
+#[test]
+fn detect_kind_directory_is_repo() {
+    let env = TestEnv::setup();
+    let repo = env.dir.path().join("some-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert_eq!(
+        jeru::detect_kind(&repo.to_string_lossy()).unwrap(),
+        Kind::Repo
+    );
+}
+
+#[test]
+fn detect_kind_file_extension_is_resource() {
+    let _env = TestEnv::setup();
+    assert_eq!(
+        jeru::detect_kind("~/notes/spec.md").unwrap(),
+        Kind::Resource
+    );
 }

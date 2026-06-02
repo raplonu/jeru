@@ -44,7 +44,7 @@ pub fn knowledge_dir(id: &str) -> Result<PathBuf> {
 /// Set a project as the current one for subsequent commands.
 ///
 /// Fails if the project directory does not exist.
-pub fn workon(name: &str) -> Result<()> {
+pub fn use_project(name: &str) -> Result<()> {
     if !project_dir(name)?.is_dir() {
         return Err(Error::ProjectNotFound(name.to_string()));
     }
