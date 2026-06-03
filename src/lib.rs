@@ -24,4 +24,4 @@ pub use project::{
     list_projects, load_manifest, project_dir, projects_dir, use_project,
 };
 pub use settings::{additional_directories, write_settings};
-pub use vscode::{code_command, workspace_path, write_workspace};
+pub use vscode::{code_command, code_folder, workspace_path, write_workspace};

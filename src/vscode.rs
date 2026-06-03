@@ -47,6 +47,13 @@ pub fn code_command(workspace: &Path, extra: &[String]) -> Command {
     cmd
 }
 
+/// Build a `code` invocation that opens a directory as a folder.
+pub fn code_folder(dir: &Path) -> Command {
+    let mut cmd = Command::new(CODE_BIN);
+    cmd.arg(dir);
+    cmd
+}
+
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()

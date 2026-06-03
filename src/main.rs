@@ -95,6 +95,9 @@ enum Command {
     Edit {
         /// Project name; defaults to the current project
         name: Option<String>,
+        /// Open the project directory in VSCode instead of the manifest in $EDITOR
+        #[arg(long)]
+        folder: bool,
     },
     /// Add a repo, knowledge set, or resource to a project
     Add {
@@ -215,7 +218,7 @@ fn main() {
         }
         Command::Readme { name, action } => run_readme(name, action),
         Command::Roadmap { name, action } => run_roadmap(name, action),
-        Command::Edit { name } => run_edit(name),
+        Command::Edit { name, folder } => run_edit(name, folder),
         Command::Add {
             path,
             kind,
@@ -497,9 +500,18 @@ fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru
     Ok(())
 }
 
-fn run_edit(name: Option<String>) -> jeru::Result<()> {
+fn run_edit(name: Option<String>, folder: bool) -> jeru::Result<()> {
     let name = jeru::resolve_project(name)?;
-    jeru::edit_manifest(&name)
+    if folder {
+        let dir = jeru::project_dir(&name)?;
+        let status = jeru::code_folder(&dir).status()?;
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(())
+    } else {
+        jeru::edit_manifest(&name)
+    }
 }
 
 fn run_create(name: &str, active: bool, force: bool) -> jeru::Result<()> {
