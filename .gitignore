@@ -10,6 +10,10 @@ devenv.local.yaml
 .pre-commit-config.yaml
 
 
+# Nix build outputs
+/result
+/result-*
+
 # Added by cargo
 
 /target
