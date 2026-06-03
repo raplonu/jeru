@@ -84,10 +84,8 @@ pub fn build_sync_pairs(
         Ok(())
     };
 
-    if !opts.repos_only {
-        // Project directory
-        push(project_dir(project_name)?)?;
-    }
+    // Project directory — always included
+    push(project_dir(project_name)?)?;
 
     // Repos — always included
     for repo in &manifest.repos {
@@ -115,28 +113,70 @@ pub fn build_sync_pairs(
 
 // ── mutagen ───────────────────────────────────────────────────────────────────
 
+/// Ensure all remote endpoint directories exist via a single SSH call.
+///
+/// Must be called before `mutagen_start`: mutagen cannot create parent
+/// directories itself and will report "Transition problems" if they are absent.
+pub fn remote_mkdirs(host: &str, pairs: &[SyncPair]) -> Result<()> {
+    let args = pairs
+        .iter()
+        .map(|p| sq(&p.remote_path))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cmd = format!("mkdir -p {args}");
+    let ok = Command::new("ssh")
+        .args([host, &cmd])
+        .status()?
+        .success();
+    if !ok {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(())
+}
+
+/// Read ignore patterns from a `.gitignore` file in `dir`, if present.
+///
+/// Returns only actionable lines: empty lines, comments (`#`), and negations
+/// (`!`) are skipped — mutagen does not support negation patterns.
+fn gitignore_patterns(dir: &Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(dir.join(".gitignore")) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!'))
+        .map(String::from)
+        .collect()
+}
+
 /// Start (or resume) a mutagen session for every sync pair.
-pub fn mutagen_start(pairs: &[SyncPair]) -> Result<()> {
+///
+/// All sessions are tagged with `jeru-project=<project>` so they can be
+/// selected together (e.g. by `sync monitor --label-selector`).
+pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
+    let label = format!("jeru-project={project}");
     for p in pairs {
-        let ok = Command::new("mutagen")
-            .args([
-                "sync",
-                "create",
-                "--name",
-                &p.session,
-                "--ignore-vcs",
-                "--sync-mode",
-                "two-way-resolved",
-                p.local.to_str().unwrap_or_default(),
-                &p.remote,
-            ])
-            .status()?
-            .success();
+        let patterns = gitignore_patterns(&p.local);
+        let mut cmd = Command::new("mutagen");
+        cmd.args([
+            "sync", "create",
+            "--name", &p.session,
+            "--label", &label,
+            "--ignore-vcs",
+            "--sync-mode", "two-way-resolved",
+        ]);
+        for pat in &patterns {
+            cmd.args(["--ignore", pat]);
+        }
+        cmd.arg(p.local.to_str().unwrap_or_default());
+        cmd.arg(&p.remote);
+        let ok = cmd.status()?.success();
 
         if !ok {
             // Session likely already exists — try to resume it.
             let resumed = Command::new("mutagen")
-                .args(["sync", "resume", "--name", &p.session])
+                .args(["sync", "resume", &p.session])
                 .status()?
                 .success();
             if !resumed {
@@ -155,7 +195,7 @@ pub fn mutagen_stop(pairs: &[SyncPair]) -> Result<()> {
     for p in pairs {
         // Ignore errors on termination (session may already be gone).
         let _ = Command::new("mutagen")
-            .args(["sync", "terminate", "--name", &p.session])
+            .args(["sync", "terminate", &p.session])
             .status();
     }
     Ok(())
@@ -163,11 +203,20 @@ pub fn mutagen_stop(pairs: &[SyncPair]) -> Result<()> {
 
 // ── VSCode remote ─────────────────────────────────────────────────────────────
 
-/// Open the project directory in VSCode via Remote SSH (non-blocking).
+/// Open a directory in VSCode via Remote SSH (non-blocking).
 pub fn vscode_open_remote(host: &str, remote_path: &str) -> Result<()> {
     Command::new("code")
         .arg("--folder-uri")
         .arg(format!("vscode-remote://ssh-remote+{host}{remote_path}"))
+        .spawn()?;
+    Ok(())
+}
+
+/// Open a `.code-workspace` file in VSCode via Remote SSH (non-blocking).
+pub fn vscode_open_workspace_remote(host: &str, remote_file_path: &str) -> Result<()> {
+    Command::new("code")
+        .arg("--file-uri")
+        .arg(format!("vscode-remote://ssh-remote+{host}{remote_file_path}"))
         .spawn()?;
     Ok(())
 }
@@ -202,13 +251,12 @@ pub fn claude_ssh_cmd(
 /// then returns.
 pub fn launch_tmux(
     session: &str,
-    pairs: &[SyncPair],
     claude_cmd: Option<&str>,
+    project: &str,
 ) -> Result<()> {
-    let monitor_cmd = format!(
-        "mutagen sync monitor {}",
-        pairs.iter().map(|p| p.session.as_str()).collect::<Vec<_>>().join(" ")
-    );
+    // Use the label added at session-creation time so all pairs are covered by
+    // a single monitor command (sync monitor accepts only one session specifier).
+    let monitor_cmd = format!("mutagen sync monitor --label-selector jeru-project={project}");
 
     // Create session (detached). If it already exists we just re-attach below.
     let created = Command::new("tmux")

@@ -77,6 +77,37 @@ pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
     Ok(dest)
 }
 
+/// Create a new project directory and write a minimal manifest.
+///
+/// - Directory absent: created normally.
+/// - Directory present, already has a manifest: always errors.
+/// - Directory present, empty: proceeds without `force`.
+/// - Directory present, non-empty, no manifest: requires `force`.
+pub fn create_project(name: &str, force: bool) -> Result<PathBuf> {
+    let dir = project_dir(name)?;
+    if dir.is_dir() {
+        if Manifest::load_from_dir(&dir).is_ok() {
+            return Err(Error::AlreadyExists(dir.to_string_lossy().into_owned()));
+        }
+        let non_empty = std::fs::read_dir(&dir)?.next().is_some();
+        if non_empty && !force {
+            return Err(Error::DirectoryNotEmpty(dir.to_string_lossy().into_owned()));
+        }
+    } else {
+        std::fs::create_dir_all(&dir)?;
+    }
+    let manifest = Manifest {
+        name: name.to_string(),
+        primary_repo: None,
+        knowledge_sets: Vec::new(),
+        repos: Vec::new(),
+        resources: Vec::new(),
+        roadmap: None,
+    };
+    manifest.save_to_dir(&dir)?;
+    Ok(dir)
+}
+
 /// List projects found under the project tree.
 ///
 /// A missing project tree is not an error — it yields an empty list.
@@ -89,7 +120,7 @@ pub fn list_projects() -> Result<Vec<Project>> {
     let mut projects = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
+        if entry.file_type()?.is_dir() && Manifest::load_from_dir(&entry.path()).is_ok() {
             projects.push(Project {
                 name: entry.file_name().to_string_lossy().into_owned(),
                 path: entry.path(),

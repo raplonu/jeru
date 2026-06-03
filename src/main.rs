@@ -73,6 +73,17 @@ enum Command {
         /// Target shell
         shell: Shell,
     },
+    /// Create a new project
+    Create {
+        /// Project name (new directory under the project tree)
+        name: String,
+        /// Set this project as the current one after creating it
+        #[arg(long)]
+        active: bool,
+        /// Create the project even if the directory already exists and is non-empty
+        #[arg(long)]
+        force: bool,
+    },
     /// Add a repo, knowledge set, or resource to a project
     Add {
         /// Path to add
@@ -183,6 +194,7 @@ fn main() {
         }
         Command::Roadmap { name, action } => run_roadmap(name, action),
         Command::Add { path, kind, project } => run_add(project, path, kind),
+        Command::Create { name, active, force } => run_create(&name, active, force),
     };
 
     if let Err(err) = result {
@@ -226,14 +238,27 @@ fn run_work(
 }
 
 fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
-    // VSCode: generate workspace and spawn non-blocking. Skip if no repos.
-    match jeru::write_workspace(name) {
-        Ok(workspace) => {
-            println!("Wrote {}", workspace.display());
-            jeru::code_command(&workspace, &[]).spawn()?;
-        }
-        Err(jeru::Error::NoRepos(_)) if !repos => {}
+    // Generate CLAUDE.md once; skip silently if it already exists.
+    match jeru::init_claude_md(name, false) {
+        Ok(path) => println!("Wrote {}", path.display()),
+        Err(jeru::Error::AlreadyExists(_)) => {}
         Err(e) => return Err(e),
+    }
+
+    // Generate workspace once and open it. Skip if it already exists or has no repos.
+    let workspace = match jeru::workspace_path(name) {
+        Ok(p) if p.exists() => Some(p),
+        _ => match jeru::write_workspace(name) {
+            Ok(p) => {
+                println!("Wrote {}", p.display());
+                Some(p)
+            }
+            Err(jeru::Error::NoRepos(_)) if !repos => None,
+            Err(e) => return Err(e),
+        },
+    };
+    if let Some(ws) = &workspace {
+        jeru::code_command(ws, &[]).spawn()?;
     }
 
     // Claude Code: repos mode opens in the first repo, otherwise the project dir.
@@ -259,7 +284,8 @@ fn run_work_remote(
 ) -> jeru::Result<()> {
     use jeru::remote::{
         SyncOptions, build_sync_pairs, claude_ssh_cmd, launch_tmux, mutagen_start, mutagen_stop,
-        remote_add_dirs, remote_home, remote_repos_dirs, tmux_session_name, vscode_open_remote,
+        remote_add_dirs, remote_home, remote_mkdirs, remote_repos_dirs, tmux_session_name,
+        vscode_open_remote, vscode_open_workspace_remote,
     };
 
     let manifest = jeru::load_manifest(name)?;
@@ -277,9 +303,33 @@ fn run_work_remote(
     let local_home = dirs::home_dir().ok_or(jeru::Error::NoHomeDir)?;
     let pairs = build_sync_pairs(name, &manifest, host, &rhome, &opts)?;
 
+    // Generate CLAUDE.md once; skip silently if it already exists.
+    match jeru::init_claude_md(name, false) {
+        Ok(path) => println!("Wrote {}", path.display()),
+        Err(jeru::Error::AlreadyExists(_)) => {}
+        Err(e) => return Err(e),
+    }
+
+    // Generate workspace once before mutagen starts so the initial sync carries
+    // it to the remote. pairs[0] is always the project dir.
+    let project_remote_path = &pairs[0].remote_path;
+    let remote_workspace: Option<String> = match jeru::workspace_path(name) {
+        Ok(p) if p.exists() => Some(format!("{project_remote_path}/{name}.code-workspace")),
+        _ => match jeru::write_workspace(name) {
+            Ok(_) => Some(format!("{project_remote_path}/{name}.code-workspace")),
+            Err(jeru::Error::NoRepos(_)) => None,
+            Err(e) => return Err(e),
+        },
+    };
+
+    // Ensure remote directories exist before mutagen tries to sync into them.
+    eprint!("Creating remote directories… ");
+    remote_mkdirs(host, &pairs)?;
+    eprintln!("done");
+
     // Start (or resume) mutagen sessions.
     println!("Starting {} mutagen session(s)…", pairs.len());
-    mutagen_start(&pairs)?;
+    mutagen_start(&pairs, name)?;
 
     // Determine the remote path that VSCode and Claude will open.
     let (remote_cwd, claude_add_dirs) = if repos {
@@ -292,8 +342,11 @@ fn run_work_remote(
         (cwd, add_dirs)
     };
 
-    // Open VSCode at the chosen remote directory (non-blocking).
-    vscode_open_remote(host, &remote_cwd)?;
+    // Open VSCode: workspace file when available, project folder otherwise.
+    match &remote_workspace {
+        Some(ws) => vscode_open_workspace_remote(host, ws)?,
+        None => vscode_open_remote(host, &remote_cwd)?,
+    }
 
     // Build the SSH Claude command (unless --no-claude).
     let claude_cmd = if no_claude {
@@ -305,7 +358,7 @@ fn run_work_remote(
     // Launch tmux: blocks until the user closes all windows.
     let session = tmux_session_name(name, host);
     println!("Launching tmux session '{session}'…");
-    launch_tmux(&session, &pairs, claude_cmd.as_deref())?;
+    launch_tmux(&session, claude_cmd.as_deref(), name)?;
 
     // Clean up mutagen when the user exits.
     println!("Stopping mutagen sessions…");
@@ -401,6 +454,16 @@ fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru
 
     jeru::add_to_project(&name, &path, kind)?;
     println!("Added {} '{}' to project {name}", kind.label(), path);
+    Ok(())
+}
+
+fn run_create(name: &str, active: bool, force: bool) -> jeru::Result<()> {
+    let dir = jeru::create_project(name, force)?;
+    println!("Created project '{name}' at {}", dir.display());
+    if active {
+        jeru::use_project(name)?;
+        println!("Current project: {name}");
+    }
     Ok(())
 }
 
