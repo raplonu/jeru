@@ -282,10 +282,15 @@ pub fn launch_tmux(session: &str, claude_cmd: Option<&str>, project: &str) -> Re
             .status()?;
     }
 
-    // Attach — blocks until the user closes all windows.
-    Command::new("tmux")
-        .args(["attach-session", "-t", session])
-        .status()?;
+    // Inside an existing tmux session, `attach-session` is rejected
+    // ("sessions should be nested with care"). Use `switch-client` instead,
+    // which replaces the current client's view with the new session.
+    let attach_cmd = if std::env::var("TMUX").is_ok() {
+        "switch-client"
+    } else {
+        "attach-session"
+    };
+    Command::new("tmux").args([attach_cmd, "-t", session]).status()?;
 
     Ok(())
 }
