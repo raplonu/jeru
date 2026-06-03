@@ -142,7 +142,9 @@ fn add_repo_appends_to_manifest() {
     let _env = TestEnv::setup();
     jeru::add_to_project("alpha", "~/code/new-repo", Kind::Repo).unwrap();
     let m = jeru::load_manifest("alpha").unwrap();
-    assert!(m.repos.contains(&"~/code/new-repo".to_string()));
+    let home = dirs::home_dir().unwrap();
+    let expected = home.join("code/new-repo").to_string_lossy().into_owned();
+    assert!(m.repos.contains(&expected), "repos: {:?}", m.repos);
 }
 
 #[test]
@@ -150,7 +152,9 @@ fn add_resource_appends_to_manifest() {
     let _env = TestEnv::setup();
     jeru::add_to_project("alpha", "~/docs/spec.md", Kind::Resource).unwrap();
     let m = jeru::load_manifest("alpha").unwrap();
-    assert!(m.resources.contains(&"~/docs/spec.md".to_string()));
+    let home = dirs::home_dir().unwrap();
+    let expected = home.join("docs/spec.md").to_string_lossy().into_owned();
+    assert!(m.resources.contains(&expected), "resources: {:?}", m.resources);
 }
 
 #[test]
@@ -199,6 +203,80 @@ fn detect_kind_file_extension_is_resource() {
         jeru::detect_kind("~/notes/spec.md").unwrap(),
         Kind::Resource
     );
+}
+
+// ── relative path handling ────────────────────────────────────────────────────
+
+#[test]
+fn add_repo_relative_path_stored_as_absolute() {
+    let env = TestEnv::setup();
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(env.dir.path()).unwrap();
+
+    jeru::add_to_project("alpha", "projects/alpha", Kind::Repo).unwrap();
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    let m = jeru::load_manifest("alpha").unwrap();
+    let expected = env.dir.path().join("projects/alpha").to_string_lossy().into_owned();
+    assert!(m.repos.contains(&expected), "repos: {:?}", m.repos);
+}
+
+#[test]
+fn add_repo_dot_slash_stored_as_absolute() {
+    let env = TestEnv::setup();
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(env.dir.path()).unwrap();
+
+    jeru::add_to_project("alpha", "./projects/alpha", Kind::Repo).unwrap();
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    let m = jeru::load_manifest("alpha").unwrap();
+    assert!(
+        m.repos.iter().any(|r| {
+            let p = std::path::Path::new(r);
+            p.is_absolute() && r.contains("projects/alpha")
+        }),
+        "repos: {:?}",
+        m.repos
+    );
+}
+
+#[test]
+fn add_resource_relative_path_stored_as_absolute() {
+    let env = TestEnv::setup();
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(env.dir.path()).unwrap();
+
+    // Create a dummy resource file in the temp dir
+    let resource = env.dir.path().join("spec.md");
+    std::fs::write(&resource, "# spec").unwrap();
+
+    jeru::add_to_project("alpha", "spec.md", Kind::Resource).unwrap();
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    let m = jeru::load_manifest("alpha").unwrap();
+    let expected = resource.to_string_lossy().into_owned();
+    assert!(m.resources.contains(&expected), "resources: {:?}", m.resources);
+}
+
+#[test]
+fn add_duplicate_via_absolute_after_relative_returns_error() {
+    let env = TestEnv::setup();
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(env.dir.path()).unwrap();
+
+    jeru::add_to_project("alpha", "projects/alpha", Kind::Repo).unwrap();
+
+    // Adding the same path as absolute should be detected as duplicate
+    let abs = env.dir.path().join("projects/alpha").to_string_lossy().into_owned();
+    let result = jeru::add_to_project("alpha", &abs, Kind::Repo);
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(result.is_err(), "expected duplicate error");
 }
 
 // ── roadmap ───────────────────────────────────────────────────────────────────

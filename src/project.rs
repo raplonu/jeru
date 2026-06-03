@@ -37,6 +37,20 @@ pub fn expand_tilde(path: &str) -> Result<String> {
     Ok(home.join(rest).to_string_lossy().into_owned())
 }
 
+/// Resolve a path to an absolute path.
+///
+/// Expands `~` and, if the result is still relative, resolves it against the
+/// current working directory.
+pub fn to_absolute_path(path: &str) -> Result<String> {
+    let expanded = expand_tilde(path)?;
+    let p = std::path::Path::new(&expanded);
+    if p.is_absolute() {
+        return Ok(expanded);
+    }
+    let abs = std::env::current_dir()?.join(p);
+    Ok(abs.to_string_lossy().into_owned())
+}
+
 /// Directory a knowledge set ID resolves to.
 pub fn knowledge_dir(id: &str) -> Result<PathBuf> {
     Ok(Config::load()?.knowledge_dir.join(id))
@@ -119,6 +133,44 @@ pub fn edit_manifest(name: &str) -> Result<()> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     Command::new(&editor).arg(&path).status()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_path_is_unchanged() {
+        let result = to_absolute_path("/usr/local/bin").unwrap();
+        assert_eq!(result, "/usr/local/bin");
+    }
+
+    #[test]
+    fn tilde_path_becomes_absolute() {
+        let result = to_absolute_path("~/foo/bar").unwrap();
+        let p = std::path::Path::new(&result);
+        assert!(p.is_absolute(), "expected absolute path, got {result}");
+        assert!(result.ends_with("foo/bar"));
+        assert!(!result.contains('~'));
+    }
+
+    #[test]
+    fn relative_path_resolved_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let result = to_absolute_path("foo/bar").unwrap();
+        let expected = cwd.join("foo/bar").to_string_lossy().into_owned();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn dot_slash_relative_path_is_absolute() {
+        let result = to_absolute_path("./my-repo").unwrap();
+        assert!(
+            std::path::Path::new(&result).is_absolute(),
+            "expected absolute path, got {result}"
+        );
+        assert!(!result.starts_with("./"));
+    }
 }
 
 /// List projects found under the project tree.

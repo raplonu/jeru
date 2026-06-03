@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::project::{expand_tilde, load_manifest, project_dir};
+use crate::project::{load_manifest, project_dir, to_absolute_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -27,7 +27,7 @@ impl Kind {
 /// - Has `.git` or is an existing directory → [`Kind::Repo`]
 /// - Otherwise → [`Kind::Resource`]
 pub fn detect_kind(path: &str) -> Result<Kind> {
-    let expanded = expand_tilde(path)?;
+    let expanded = to_absolute_path(path)?;
     let p = Path::new(&expanded);
     let config = Config::load()?;
 
@@ -57,10 +57,11 @@ pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
 
     match kind {
         Kind::Repo => {
-            if manifest.repos.iter().any(|r| r == path) {
-                return Err(Error::AlreadyExists(format!("repo '{path}'")));
+            let abs = to_absolute_path(path)?;
+            if manifest.repos.iter().any(|r| r == &abs) {
+                return Err(Error::AlreadyExists(format!("repo '{abs}'")));
             }
-            manifest.repos.push(path.to_string());
+            manifest.repos.push(abs);
         }
         Kind::Knowledge => {
             let id = knowledge_id(path)?;
@@ -70,14 +71,80 @@ pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
             manifest.knowledge_sets.push(id);
         }
         Kind::Resource => {
-            if manifest.resources.iter().any(|r| r == path) {
-                return Err(Error::AlreadyExists(format!("resource '{path}'")));
+            let abs = to_absolute_path(path)?;
+            if manifest.resources.iter().any(|r| r == &abs) {
+                return Err(Error::AlreadyExists(format!("resource '{abs}'")));
             }
-            manifest.resources.push(path.to_string());
+            manifest.resources.push(abs);
         }
     }
 
     manifest.save_to_dir(&project_dir(name)?)
+}
+
+/// Remove `path` with the given `kind` from the manifest of project `name`.
+///
+/// For knowledge sets the path is converted to an ID before matching.
+/// Returns an error if the entry is not found.
+pub fn remove_from_project(name: &str, path: &str, kind: Kind) -> Result<()> {
+    let mut manifest = load_manifest(name)?;
+
+    match kind {
+        Kind::Repo => {
+            let pos = manifest
+                .repos
+                .iter()
+                .position(|r| r == path)
+                .ok_or_else(|| Error::NotFound(format!("repo '{path}'")))?;
+            manifest.repos.remove(pos);
+        }
+        Kind::Knowledge => {
+            let id = knowledge_id(path)?;
+            let pos = manifest
+                .knowledge_sets
+                .iter()
+                .position(|k| k == &id)
+                .ok_or_else(|| Error::NotFound(format!("knowledge set '{id}'")))?;
+            manifest.knowledge_sets.remove(pos);
+        }
+        Kind::Resource => {
+            let pos = manifest
+                .resources
+                .iter()
+                .position(|r| r == path)
+                .ok_or_else(|| Error::NotFound(format!("resource '{path}'")))?;
+            manifest.resources.remove(pos);
+        }
+    }
+
+    manifest.save_to_dir(&project_dir(name)?)
+}
+
+/// Return all entries in the project manifest, optionally filtered by kind.
+///
+/// Each element is `(kind, entry)` where `entry` is the stored string
+/// (path for repos and resources, ID for knowledge sets).
+pub fn list_entries(name: &str, kind: Option<Kind>) -> Result<Vec<(Kind, String)>> {
+    let manifest = load_manifest(name)?;
+    let mut out = Vec::new();
+
+    if matches!(kind, None | Some(Kind::Repo)) {
+        for r in &manifest.repos {
+            out.push((Kind::Repo, r.clone()));
+        }
+    }
+    if matches!(kind, None | Some(Kind::Knowledge)) {
+        for k in &manifest.knowledge_sets {
+            out.push((Kind::Knowledge, k.clone()));
+        }
+    }
+    if matches!(kind, None | Some(Kind::Resource)) {
+        for r in &manifest.resources {
+            out.push((Kind::Resource, r.clone()));
+        }
+    }
+
+    Ok(out)
 }
 
 /// Derive the knowledge set ID from a path.
@@ -86,7 +153,7 @@ pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
 /// (e.g. `~/knowledge/rust/async` → `rust/async`).  Otherwise the last path
 /// component is used as a best-effort fallback.
 fn knowledge_id(path: &str) -> Result<String> {
-    let expanded = expand_tilde(path)?;
+    let expanded = to_absolute_path(path)?;
     let p = Path::new(&expanded);
     let config = Config::load()?;
 

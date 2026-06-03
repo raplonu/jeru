@@ -23,6 +23,9 @@ pub enum Error {
     #[error("{0} already exists (refusing to overwrite)")]
     AlreadyExists(String),
 
+    #[error("{0} not found in project manifest")]
+    NotFound(String),
+
     #[error("directory '{0}' is not empty; use --force to create the project anyway")]
     DirectoryNotEmpty(String),
 
