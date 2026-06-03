@@ -60,13 +60,10 @@ enum Command {
         #[command(subcommand)]
         action: ClaudeCommand,
     },
-    /// Generate the VSCode workspace and open it in VSCode
-    Code {
+    /// Generate CLAUDE.md, .claude/settings.json, and the VSCode workspace
+    Compile {
         /// Project name; defaults to the current project
         name: Option<String>,
-        /// Arguments after `--` are forwarded to code
-        #[arg(last = true)]
-        extra: Vec<String>,
     },
     /// Show, edit, or manage the project roadmap
     Roadmap {
@@ -110,6 +107,25 @@ enum Command {
         #[arg(short, long)]
         project: Option<String>,
     },
+    /// Remove a repo, knowledge set, or resource from a project
+    Remove {
+        /// Path or knowledge set ID to remove
+        path: String,
+        /// Kind of entry; deduced from path if omitted (interactive confirmation)
+        #[arg(short, long, value_enum)]
+        kind: Option<KindArg>,
+        /// Project name; defaults to the current project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// List repos, knowledge sets, and resources in a project
+    List {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+        /// Show only entries of this kind
+        #[arg(short, long, value_enum)]
+        kind: Option<KindArg>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -149,19 +165,6 @@ impl From<KindArg> for Kind {
 
 #[derive(Subcommand)]
 enum ClaudeCommand {
-    /// Generate the project CLAUDE.md from its manifest
-    Init {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-        /// Overwrite an existing CLAUDE.md
-        #[arg(short, long)]
-        force: bool,
-    },
-    /// Generate .claude/settings.json so Claude Code can read linked folders
-    Settings {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-    },
     /// Open Claude Code in the project directory, with all linked folders
     Project {
         /// Project name; defaults to the current project
@@ -205,12 +208,10 @@ fn main() {
         ),
         Command::Info { name } => run_info(name),
         Command::Claude { action } => match action {
-            ClaudeCommand::Init { name, force } => run_claude_init(name, force),
-            ClaudeCommand::Settings { name } => run_claude_settings(name),
             ClaudeCommand::Project { name, extra } => run_claude_open(name, extra, Target::Project),
             ClaudeCommand::Repos { name, extra } => run_claude_open(name, extra, Target::Repos),
         },
-        Command::Code { name, extra } => run_code(name, extra),
+        Command::Compile { name } => run_compile(name),
 
         Command::Completions { shell } => {
             generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
@@ -224,6 +225,12 @@ fn main() {
             kind,
             project,
         } => run_add(project, path, kind),
+        Command::Remove {
+            path,
+            kind,
+            project,
+        } => run_remove(project, path, kind),
+        Command::List { name, kind } => run_list(name, kind),
         Command::Create {
             name,
             active,
@@ -415,28 +422,21 @@ fn run_info(name: Option<String>) -> jeru::Result<()> {
     Ok(())
 }
 
-fn run_claude_init(name: Option<String>, force: bool) -> jeru::Result<()> {
+fn run_compile(name: Option<String>) -> jeru::Result<()> {
     let name = jeru::resolve_project(name)?;
-    let path = jeru::init_claude_md(&name, force)?;
-    println!("Wrote {}", path.display());
-    Ok(())
-}
 
-fn run_claude_settings(name: Option<String>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
-    let path = jeru::write_settings(&name)?;
-    println!("Wrote {}", path.display());
-    Ok(())
-}
+    let claude_path = jeru::init_claude_md(&name, true)?;
+    println!("Wrote {}", claude_path.display());
 
-fn run_code(name: Option<String>, extra: Vec<String>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
-    let workspace = jeru::write_workspace(&name)?;
-    println!("Wrote {}", workspace.display());
-    let status = jeru::code_command(&workspace, &extra).status()?;
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    let settings_path = jeru::write_settings(&name)?;
+    println!("Wrote {}", settings_path.display());
+
+    match jeru::write_workspace(&name) {
+        Ok(ws) => println!("Wrote {}", ws.display()),
+        Err(jeru::Error::NoRepos(_)) => {}
+        Err(e) => return Err(e),
     }
+
     Ok(())
 }
 
@@ -497,6 +497,32 @@ fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru
 
     jeru::add_to_project(&name, &path, kind)?;
     println!("Added {} '{}' to project {name}", kind.label(), path);
+    Ok(())
+}
+
+fn run_remove(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(project)?;
+
+    let kind: Kind = match kind {
+        Some(k) => k.into(),
+        None => {
+            let detected = jeru::detect_kind(&path)?;
+            confirm_kind(&path, detected)?
+        }
+    };
+
+    jeru::remove_from_project(&name, &path, kind)?;
+    println!("Removed {} '{}' from project {name}", kind.label(), path);
+    Ok(())
+}
+
+fn run_list(name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(name)?;
+    let kind = kind.map(Kind::from);
+    let entries = jeru::list_entries(&name, kind)?;
+    for (k, entry) in &entries {
+        println!("{}\t{}", k.label(), entry);
+    }
     Ok(())
 }
 
