@@ -111,20 +111,6 @@ enum RoadmapAction {
         /// Project name; defaults to the current project
         name: Option<String>,
     },
-    /// Point this project at a roadmap file outside the project directory
-    Link {
-        /// Path to the roadmap file
-        path: String,
-        /// Project name; defaults to the current project
-        #[arg(short, long)]
-        project: Option<String>,
-    },
-    /// Remove the custom roadmap path (revert to default ROADMAP.md)
-    Unlink {
-        /// Project name; defaults to the current project
-        #[arg(short, long)]
-        project: Option<String>,
-    },
 }
 
 impl From<KindArg> for Kind {
@@ -425,18 +411,6 @@ fn run_roadmap(name: Option<String>, action: Option<RoadmapAction>) -> jeru::Res
         Some(RoadmapAction::Edit { name }) => {
             let name = jeru::resolve_project(name)?;
             jeru::roadmap::edit(&name)
-        }
-        Some(RoadmapAction::Link { path, project }) => {
-            let name = jeru::resolve_project(project)?;
-            jeru::roadmap::link(&name, &path)?;
-            println!("Roadmap linked to {path}");
-            Ok(())
-        }
-        Some(RoadmapAction::Unlink { project }) => {
-            let name = jeru::resolve_project(project)?;
-            jeru::roadmap::unlink(&name)?;
-            println!("Custom roadmap path removed; using ROADMAP.md");
-            Ok(())
         }
     }
 }

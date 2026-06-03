@@ -71,7 +71,7 @@ pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
     if dest.exists() && !force {
         return Err(Error::AlreadyExists(dest.to_string_lossy().into_owned()));
     }
-    let roadmap = roadmap::claude_md_path(&manifest, name)?;
+    let roadmap = roadmap::claude_md_path(name)?;
     let rendered = template::render_claude_md(&manifest, roadmap.as_deref())?;
     std::fs::write(&dest, rendered)?;
     Ok(dest)
@@ -102,7 +102,6 @@ pub fn create_project(name: &str, force: bool) -> Result<PathBuf> {
         knowledge_sets: Vec::new(),
         repos: Vec::new(),
         resources: Vec::new(),
-        roadmap: None,
     };
     manifest.save_to_dir(&dir)?;
     Ok(dir)

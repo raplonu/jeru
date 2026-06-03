@@ -2,39 +2,22 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::constants::ROADMAP_FILE;
-use crate::error::{Error, Result};
-use crate::manifest::Manifest;
-use crate::project::{expand_tilde, load_manifest, project_dir};
+use crate::error::Result;
+use crate::project::project_dir;
 
 // ── path resolution ───────────────────────────────────────────────────────────
 
-/// Return the effective roadmap path for a project.
-///
-/// Priority: manifest `roadmap` field → `<project-dir>/ROADMAP.md`.
+/// Return the roadmap path for a project (`<project-dir>/ROADMAP.md`).
 pub fn effective_path(name: &str) -> Result<PathBuf> {
-    effective_path_from(&load_manifest(name)?, name)
+    Ok(project_dir(name)?.join(ROADMAP_FILE))
 }
 
-/// Same as [`effective_path`] but reuses an already-loaded manifest.
-pub fn effective_path_from(manifest: &Manifest, name: &str) -> Result<PathBuf> {
-    match &manifest.roadmap {
-        Some(custom) => Ok(PathBuf::from(expand_tilde(custom)?)),
-        None => Ok(project_dir(name)?.join(ROADMAP_FILE)),
-    }
-}
-
-/// Return the roadmap path to embed in `CLAUDE.md`, or `None` if no roadmap
-/// should be referenced.
-///
-/// - If `manifest.roadmap` is set, always include it.
-/// - Otherwise include the default path only if the file actually exists.
-pub fn claude_md_path(manifest: &Manifest, name: &str) -> Result<Option<PathBuf>> {
-    if manifest.roadmap.is_some() {
-        return Ok(Some(effective_path_from(manifest, name)?));
-    }
-    let default = project_dir(name)?.join(ROADMAP_FILE);
-    if default.exists() {
-        Ok(Some(default))
+/// Return the roadmap path to embed in `CLAUDE.md`, or `None` if the file does
+/// not exist.
+pub fn claude_md_path(name: &str) -> Result<Option<PathBuf>> {
+    let path = project_dir(name)?.join(ROADMAP_FILE);
+    if path.exists() {
+        Ok(Some(path))
     } else {
         Ok(None)
     }
@@ -138,26 +121,4 @@ pub fn edit(name: &str) -> Result<()> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     Command::new(&editor).arg(&path).status()?;
     Ok(())
-}
-
-// ── link / unlink ─────────────────────────────────────────────────────────────
-
-/// Store a custom roadmap path in the project manifest.
-pub fn link(name: &str, path: &str) -> Result<()> {
-    let mut manifest = load_manifest(name)?;
-    manifest.roadmap = Some(path.to_string());
-    manifest.save_to_dir(&project_dir(name)?)
-}
-
-/// Remove the custom roadmap path from the project manifest, reverting to the
-/// default `ROADMAP.md` location.
-pub fn unlink(name: &str) -> Result<()> {
-    let mut manifest = load_manifest(name)?;
-    if manifest.roadmap.is_none() {
-        return Err(Error::AlreadyExists(
-            "no custom roadmap path is set".to_string(),
-        ));
-    }
-    manifest.roadmap = None;
-    manifest.save_to_dir(&project_dir(name)?)
 }

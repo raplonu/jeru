@@ -24,10 +24,6 @@ pub struct Manifest {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
-
-    /// Optional path to a roadmap file outside the project directory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roadmap: Option<String>,
 }
 
 impl Manifest {
