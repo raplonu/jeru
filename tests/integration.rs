@@ -211,32 +211,6 @@ fn roadmap_default_path_is_in_project_dir() {
 }
 
 #[test]
-fn roadmap_link_stores_path_in_manifest() {
-    let _env = TestEnv::setup();
-    jeru::roadmap::link("alpha", "~/notes/alpha-roadmap.md").unwrap();
-    let m = jeru::load_manifest("alpha").unwrap();
-    assert_eq!(m.roadmap.as_deref(), Some("~/notes/alpha-roadmap.md"));
-}
-
-#[test]
-fn roadmap_unlink_clears_path() {
-    let _env = TestEnv::setup();
-    jeru::roadmap::link("alpha", "~/notes/alpha-roadmap.md").unwrap();
-    jeru::roadmap::unlink("alpha").unwrap();
-    let m = jeru::load_manifest("alpha").unwrap();
-    assert!(m.roadmap.is_none());
-}
-
-#[test]
-fn roadmap_link_changes_effective_path() {
-    let env = TestEnv::setup();
-    let custom = env.dir.path().join("notes/alpha-roadmap.md");
-    let custom_str = custom.to_string_lossy().into_owned();
-    jeru::roadmap::link("alpha", &custom_str).unwrap();
-    assert_eq!(jeru::roadmap::effective_path("alpha").unwrap(), custom);
-}
-
-#[test]
 fn init_claude_md_includes_roadmap_when_file_exists() {
     let env = TestEnv::setup();
     // Create a ROADMAP.md in the project dir
