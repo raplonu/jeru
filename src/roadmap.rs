@@ -73,14 +73,24 @@ fn parse(content: &str) -> Vec<Section> {
     for line in content.lines() {
         if line.starts_with('#') {
             let heading = line.trim_start_matches('#').trim().to_string();
-            sections.push(Section { heading, done: 0, total: 0, open: Vec::new() });
+            sections.push(Section {
+                heading,
+                done: 0,
+                total: 0,
+                open: Vec::new(),
+            });
             continue;
         }
 
-        let Some(current) = sections.last_mut() else { continue };
+        let Some(current) = sections.last_mut() else {
+            continue;
+        };
 
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("- [x]").or_else(|| trimmed.strip_prefix("- [X]")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("- [x]")
+            .or_else(|| trimmed.strip_prefix("- [X]"))
+        {
             current.done += 1;
             current.total += 1;
             let _ = rest; // done items are not listed

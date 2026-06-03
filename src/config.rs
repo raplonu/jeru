@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use figment::providers::{Env, Serialized};
 use figment::Figment;
+use figment::providers::{Env, Serialized};
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{CACHE_DIR_NAME, ENV_PREFIX, KNOWLEDGE_DIR, PROJECTS_DIR};

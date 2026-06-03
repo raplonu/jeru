@@ -36,5 +36,9 @@ pub fn render_claude_md(
     env.set_lstrip_blocks(true);
     env.add_template("claude_md", CLAUDE_MD_TEMPLATE)?;
     let template = env.get_template("claude_md")?;
-    Ok(template.render(ClaudeContext { manifest, roadmap_path, readme_path })?)
+    Ok(template.render(ClaudeContext {
+        manifest,
+        roadmap_path,
+        readme_path,
+    })?)
 }
