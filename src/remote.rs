@@ -29,9 +29,7 @@ pub struct SyncPair {
 
 /// Fetch the remote user's home directory via SSH.
 pub fn remote_home(host: &str) -> Result<String> {
-    let out = Command::new("ssh")
-        .args([host, "echo $HOME"])
-        .output()?;
+    let out = Command::new("ssh").args([host, "echo $HOME"]).output()?;
     if !out.status.success() {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -43,9 +41,9 @@ pub fn remote_home(host: &str) -> Result<String> {
 /// Map a local absolute path to a remote absolute path, keeping the same
 /// relative suffix under `~/`.
 fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> Result<String> {
-    let rel = local.strip_prefix(local_home).map_err(|_| {
-        Error::PathNotUnderHome(local.to_string_lossy().into_owned())
-    })?;
+    let rel = local
+        .strip_prefix(local_home)
+        .map_err(|_| Error::PathNotUnderHome(local.to_string_lossy().into_owned()))?;
     Ok(format!("{remote_home}/{}", rel.to_string_lossy()))
 }
 
@@ -124,10 +122,7 @@ pub fn remote_mkdirs(host: &str, pairs: &[SyncPair]) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     let cmd = format!("mkdir -p {args}");
-    let ok = Command::new("ssh")
-        .args([host, &cmd])
-        .status()?
-        .success();
+    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -160,11 +155,15 @@ pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
         let patterns = gitignore_patterns(&p.local);
         let mut cmd = Command::new("mutagen");
         cmd.args([
-            "sync", "create",
-            "--name", &p.session,
-            "--label", &label,
+            "sync",
+            "create",
+            "--name",
+            &p.session,
+            "--label",
+            &label,
             "--ignore-vcs",
-            "--sync-mode", "two-way-resolved",
+            "--sync-mode",
+            "two-way-resolved",
         ]);
         for pat in &patterns {
             cmd.args(["--ignore", pat]);
@@ -216,7 +215,9 @@ pub fn vscode_open_remote(host: &str, remote_path: &str) -> Result<()> {
 pub fn vscode_open_workspace_remote(host: &str, remote_file_path: &str) -> Result<()> {
     Command::new("code")
         .arg("--file-uri")
-        .arg(format!("vscode-remote://ssh-remote+{host}{remote_file_path}"))
+        .arg(format!(
+            "vscode-remote://ssh-remote+{host}{remote_file_path}"
+        ))
         .spawn()?;
     Ok(())
 }
@@ -242,38 +243,43 @@ pub fn claude_ssh_cmd(
         .collect::<Vec<_>>()
         .join(" ");
     let tail = extra.join(" ");
-    let inner = format!("cd {rp} && claude {add} {tail}", rp = sq(remote_project_path));
+    let inner = format!(
+        "cd {rp} && claude {add} {tail}",
+        rp = sq(remote_project_path)
+    );
     format!("ssh -t {host} {}", sq(&inner))
 }
 
 /// Launch a tmux session with a `sync` window (mutagen monitor) and,
 /// optionally, a `claude` window.  Blocks until the user closes the session,
 /// then returns.
-pub fn launch_tmux(
-    session: &str,
-    claude_cmd: Option<&str>,
-    project: &str,
-) -> Result<()> {
+pub fn launch_tmux(session: &str, claude_cmd: Option<&str>, project: &str) -> Result<()> {
     // Use the label added at session-creation time so all pairs are covered by
     // a single monitor command (sync monitor accepts only one session specifier).
     let monitor_cmd = format!("mutagen sync monitor --label-selector jeru-project={project}");
 
     // Create session (detached). If it already exists we just re-attach below.
     let created = Command::new("tmux")
-        .args(["new-session", "-d", "-s", session, "-n", "sync", &monitor_cmd])
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-n",
+            "sync",
+            &monitor_cmd,
+        ])
         .status()?
         .success();
 
-    if created {
-        if let Some(cmd) = claude_cmd {
-            Command::new("tmux")
-                .args(["new-window", "-t", session, "-n", "claude", cmd])
-                .status()?;
-            // Start focused on the claude window.
-            Command::new("tmux")
-                .args(["select-window", "-t", &format!("{session}:claude")])
-                .status()?;
-        }
+    if created && let Some(cmd) = claude_cmd {
+        Command::new("tmux")
+            .args(["new-window", "-t", session, "-n", "claude", cmd])
+            .status()?;
+        // Start focused on the claude window.
+        Command::new("tmux")
+            .args(["select-window", "-t", &format!("{session}:claude")])
+            .status()?;
     }
 
     // Attach — blocks until the user closes all windows.
@@ -305,7 +311,11 @@ pub fn remote_repos_dirs(
         .split_first()
         .ok_or_else(|| crate::error::Error::NoRepos(String::new()))?;
 
-    let cwd = to_remote(&PathBuf::from(expand_tilde(first)?), local_home, remote_home)?;
+    let cwd = to_remote(
+        &PathBuf::from(expand_tilde(first)?),
+        local_home,
+        remote_home,
+    )?;
     let add_dirs = rest
         .iter()
         .map(|r| to_remote(&PathBuf::from(expand_tilde(r)?), local_home, remote_home))
@@ -324,10 +334,18 @@ pub fn remote_add_dirs(
     let mut dirs = Vec::new();
 
     if let Some(primary) = &manifest.primary_repo {
-        dirs.push(to_remote(&PathBuf::from(expand_tilde(primary)?), local_home, remote_home)?);
+        dirs.push(to_remote(
+            &PathBuf::from(expand_tilde(primary)?),
+            local_home,
+            remote_home,
+        )?);
     }
     for repo in &manifest.repos {
-        dirs.push(to_remote(&PathBuf::from(expand_tilde(repo)?), local_home, remote_home)?);
+        dirs.push(to_remote(
+            &PathBuf::from(expand_tilde(repo)?),
+            local_home,
+            remote_home,
+        )?);
     }
     if opts.knowledge {
         for id in &manifest.knowledge_sets {
@@ -336,7 +354,11 @@ pub fn remote_add_dirs(
     }
     if opts.resources {
         for res in &manifest.resources {
-            dirs.push(to_remote(&PathBuf::from(expand_tilde(res)?), local_home, remote_home)?);
+            dirs.push(to_remote(
+                &PathBuf::from(expand_tilde(res)?),
+                local_home,
+                remote_home,
+            )?);
         }
     }
 

@@ -42,7 +42,7 @@ pub enum Error {
     Template(#[from] minijinja::Error),
 
     #[error("invalid configuration: {0}")]
-    Config(#[from] figment::Error),
+    Config(Box<figment::Error>),
 
     #[error("SSH command failed for '{0}'")]
     RemoteSsh(String),
@@ -52,6 +52,12 @@ pub enum Error {
 
     #[error("path '{0}' is not under the home directory and cannot be mapped to a remote path")]
     PathNotUnderHome(String),
+}
+
+impl From<figment::Error> for Error {
+    fn from(e: figment::Error) -> Self {
+        Error::Config(Box::new(e))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

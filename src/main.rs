@@ -178,9 +178,23 @@ fn main() {
     let result = match cli.command {
         Command::Ls => run_ls(),
         Command::Use { name } => run_use(&name),
-        Command::Work { name, remote, repos, no_claude, no_knowledge, no_resources, extra } => {
-            run_work(name, remote, repos, no_claude, no_knowledge, no_resources, extra)
-        }
+        Command::Work {
+            name,
+            remote,
+            repos,
+            no_claude,
+            no_knowledge,
+            no_resources,
+            extra,
+        } => run_work(
+            name,
+            remote,
+            repos,
+            no_claude,
+            no_knowledge,
+            no_resources,
+            extra,
+        ),
         Command::Info { name } => run_info(name),
         Command::Claude { action } => match action {
             ClaudeCommand::Init { name, force } => run_claude_init(name, force),
@@ -196,8 +210,16 @@ fn main() {
         }
         Command::Readme { name, action } => run_readme(name, action),
         Command::Roadmap { name, action } => run_roadmap(name, action),
-        Command::Add { path, kind, project } => run_add(project, path, kind),
-        Command::Create { name, active, force } => run_create(&name, active, force),
+        Command::Add {
+            path,
+            kind,
+            project,
+        } => run_add(project, path, kind),
+        Command::Create {
+            name,
+            active,
+            force,
+        } => run_create(&name, active, force),
     };
 
     if let Err(err) = result {
@@ -236,7 +258,15 @@ fn run_work(
     let name = jeru::resolve_project(name)?;
     match remote {
         None => run_work_local(&name, repos, &extra),
-        Some(host) => run_work_remote(&name, &host, repos, no_claude, no_knowledge, no_resources, &extra),
+        Some(host) => run_work_remote(
+            &name,
+            &host,
+            repos,
+            no_claude,
+            no_knowledge,
+            no_resources,
+            &extra,
+        ),
     }
 }
 
@@ -482,7 +512,7 @@ fn confirm_kind(path: &str, detected: Kind) -> jeru::Result<Kind> {
         .items(&LABELS)
         .default(default)
         .interact()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     Ok(KINDS[selection])
 }
