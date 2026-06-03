@@ -34,6 +34,12 @@ _None linked._
 Do NOT read repo `CLAUDE.md` files up front. When you are about to read, edit, or
 run against files in a repo, FIRST read that repo's `CLAUDE.md`; load only the docs
 for repos you actually touch.
+{% if readme_path %}
+
+## README
+
+This project has a README at `{{ readme_path }}`. Read it to understand the project context.
+{% endif %}
 {% if roadmap_path %}
 
 ## Roadmap

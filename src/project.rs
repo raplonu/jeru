@@ -72,7 +72,8 @@ pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
         return Err(Error::AlreadyExists(dest.to_string_lossy().into_owned()));
     }
     let roadmap = roadmap::claude_md_path(name)?;
-    let rendered = template::render_claude_md(&manifest, roadmap.as_deref())?;
+    let readme = crate::readme::claude_md_path(name)?;
+    let rendered = template::render_claude_md(&manifest, roadmap.as_deref(), readme.as_deref())?;
     std::fs::write(&dest, rendered)?;
     Ok(dest)
 }

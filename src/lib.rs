@@ -2,6 +2,7 @@ pub mod add;
 pub mod cache;
 pub mod config;
 pub mod constants;
+pub mod readme;
 pub mod remote;
 pub mod roadmap;
 pub mod error;

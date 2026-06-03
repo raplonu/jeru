@@ -43,6 +43,13 @@ enum Command {
         #[arg(last = true)]
         extra: Vec<String>,
     },
+    /// Show or edit the project README
+    Readme {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<ReadmeAction>,
+    },
     /// Show the manifest for a project
     Info {
         /// Project name; defaults to the current project
@@ -102,6 +109,15 @@ enum KindArg {
     Repo,
     Knowledge,
     Resource,
+}
+
+#[derive(Subcommand)]
+enum ReadmeAction {
+    /// Open the README in $EDITOR
+    Edit {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -178,6 +194,7 @@ fn main() {
             generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
             return;
         }
+        Command::Readme { name, action } => run_readme(name, action),
         Command::Roadmap { name, action } => run_roadmap(name, action),
         Command::Add { path, kind, project } => run_add(project, path, kind),
         Command::Create { name, active, force } => run_create(&name, active, force),
@@ -400,6 +417,19 @@ fn run_claude_open(name: Option<String>, extra: Vec<String>, target: Target) -> 
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn run_readme(name: Option<String>, action: Option<ReadmeAction>) -> jeru::Result<()> {
+    match action {
+        None => {
+            let name = jeru::resolve_project(name)?;
+            jeru::readme::show(&name)
+        }
+        Some(ReadmeAction::Edit { name }) => {
+            let name = jeru::resolve_project(name)?;
+            jeru::readme::edit(&name)
+        }
+    }
 }
 
 fn run_roadmap(name: Option<String>, action: Option<RoadmapAction>) -> jeru::Result<()> {

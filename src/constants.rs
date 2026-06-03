@@ -20,6 +20,9 @@ pub const CURRENT_PROJECT_FILE: &str = "current_project";
 // Default roadmap filename inside a project directory
 pub const ROADMAP_FILE: &str = "ROADMAP.md";
 
+// Default readme filename inside a project directory
+pub const README_FILE: &str = "README.md";
+
 // External binaries
 pub const CLAUDE_BIN: &str = "claude";
 pub const CODE_BIN: &str = "code";
