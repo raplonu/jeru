@@ -91,6 +91,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Open the project manifest (project.yml) in $EDITOR
+    Edit {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+    },
     /// Add a repo, knowledge set, or resource to a project
     Add {
         /// Path to add
@@ -210,6 +215,7 @@ fn main() {
         }
         Command::Readme { name, action } => run_readme(name, action),
         Command::Roadmap { name, action } => run_roadmap(name, action),
+        Command::Edit { name } => run_edit(name),
         Command::Add {
             path,
             kind,
@@ -489,6 +495,11 @@ fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru
     jeru::add_to_project(&name, &path, kind)?;
     println!("Added {} '{}' to project {name}", kind.label(), path);
     Ok(())
+}
+
+fn run_edit(name: Option<String>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(name)?;
+    jeru::edit_manifest(&name)
 }
 
 fn run_create(name: &str, active: bool, force: bool) -> jeru::Result<()> {

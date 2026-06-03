@@ -27,6 +27,15 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// Return the path of the manifest file in `dir` (existing or default).
+    pub fn path_in_dir(dir: &Path) -> Result<std::path::PathBuf> {
+        Ok(MANIFEST_FILES
+            .iter()
+            .map(|file| dir.join(file))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| dir.join(MANIFEST_FILES[0])))
+    }
+
     /// Write the manifest back to its directory, overwriting the existing file.
     ///
     /// Uses the first candidate filename that already exists, or falls back to
@@ -50,9 +59,7 @@ impl Manifest {
             .iter()
             .map(|file| dir.join(file))
             .find(|candidate| candidate.is_file())
-            .ok_or_else(|| {
-                Error::ManifestNotFound(dir.to_string_lossy().into_owned())
-            })?;
+            .ok_or_else(|| Error::ManifestNotFound(dir.to_string_lossy().into_owned()))?;
 
         let content = std::fs::read_to_string(path)?;
         Ok(serde_yaml_ng::from_str(&content)?)

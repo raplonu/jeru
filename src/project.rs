@@ -108,6 +108,19 @@ pub fn create_project(name: &str, force: bool) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Open the project manifest in `$EDITOR`.
+pub fn edit_manifest(name: &str) -> Result<()> {
+    use std::process::Command;
+    let dir = project_dir(name)?;
+    if !dir.is_dir() {
+        return Err(Error::ProjectNotFound(name.to_string()));
+    }
+    let path = Manifest::path_in_dir(&dir)?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    Command::new(&editor).arg(&path).status()?;
+    Ok(())
+}
+
 /// List projects found under the project tree.
 ///
 /// A missing project tree is not an error — it yields an empty list.

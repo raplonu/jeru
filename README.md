@@ -49,6 +49,14 @@ jeru create <name> [--active] [--force]
 
 Creates a new project directory under `~/project/<name>/` with a starter `project.yml`. Pass `--active` to immediately set it as the current project, and `--force` to proceed even if the directory already exists and is non-empty.
 
+### Editing the manifest
+
+```
+jeru edit [name]
+```
+
+Opens `project.yml` in `$EDITOR` for direct editing.
+
 ### Adding entries
 
 ```

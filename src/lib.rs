@@ -2,13 +2,13 @@ pub mod add;
 pub mod cache;
 pub mod config;
 pub mod constants;
-pub mod readme;
-pub mod remote;
-pub mod roadmap;
 pub mod error;
 pub mod launch;
 pub mod manifest;
 pub mod project;
+pub mod readme;
+pub mod remote;
+pub mod roadmap;
 pub mod settings;
 pub mod template;
 pub mod vscode;
@@ -20,8 +20,8 @@ pub use error::{Error, Result};
 pub use launch::{claude_for_project, claude_for_repos};
 pub use manifest::Manifest;
 pub use project::{
-    Project, create_project, expand_tilde, init_claude_md, knowledge_dir, list_projects,
-    load_manifest, project_dir, projects_dir, use_project,
+    Project, create_project, edit_manifest, expand_tilde, init_claude_md, knowledge_dir,
+    list_projects, load_manifest, project_dir, projects_dir, use_project,
 };
 pub use settings::{additional_directories, write_settings};
 pub use vscode::{code_command, workspace_path, write_workspace};
