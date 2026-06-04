@@ -43,13 +43,6 @@ enum Command {
         #[arg(last = true)]
         extra: Vec<String>,
     },
-    /// Show or edit the project README
-    Readme {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-        #[command(subcommand)]
-        action: Option<ReadmeAction>,
-    },
     /// Show the manifest for a project
     Info {
         /// Project name; defaults to the current project
@@ -64,13 +57,6 @@ enum Command {
     Compile {
         /// Project name; defaults to the current project
         name: Option<String>,
-    },
-    /// Show, edit, or manage the project roadmap
-    Roadmap {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-        #[command(subcommand)]
-        action: Option<RoadmapAction>,
     },
     /// Print a shell completion script to stdout
     Completions {
@@ -88,13 +74,16 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Open the project manifest (project.yml) in $EDITOR
+    /// Open a project file in $EDITOR, or the project folder in VSCode
     Edit {
+        /// File to open (relative to the project directory); omit to open VSCode
+        filename: Option<String>,
         /// Project name; defaults to the current project
-        name: Option<String>,
-        /// Open the project directory in VSCode instead of the manifest in $EDITOR
+        #[arg(short = 'p', long)]
+        project: Option<String>,
+        /// List accepted filename aliases
         #[arg(long)]
-        folder: bool,
+        list_alias: bool,
     },
     /// Add a repo, knowledge set, or resource to a project
     Add {
@@ -133,24 +122,6 @@ enum KindArg {
     Repo,
     Knowledge,
     Resource,
-}
-
-#[derive(Subcommand)]
-enum ReadmeAction {
-    /// Open the README in $EDITOR
-    Edit {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum RoadmapAction {
-    /// Open the roadmap in $EDITOR
-    Edit {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-    },
 }
 
 impl From<KindArg> for Kind {
@@ -217,9 +188,7 @@ fn main() {
             generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
             return;
         }
-        Command::Readme { name, action } => run_readme(name, action),
-        Command::Roadmap { name, action } => run_roadmap(name, action),
-        Command::Edit { name, folder } => run_edit(name, folder),
+        Command::Edit { filename, project, list_alias } => run_edit(filename, project, list_alias),
         Command::Add {
             path,
             kind,
@@ -307,7 +276,11 @@ fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()>
         },
     };
     if let Some(ws) = &workspace {
-        jeru::code_command(ws, &[]).spawn()?;
+        jeru::code_command(ws, &[])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
     }
 
     // Claude Code: repos mode opens in the first repo, otherwise the project dir.
@@ -458,32 +431,6 @@ fn run_claude_open(name: Option<String>, extra: Vec<String>, target: Target) -> 
     Ok(())
 }
 
-fn run_readme(name: Option<String>, action: Option<ReadmeAction>) -> jeru::Result<()> {
-    match action {
-        None => {
-            let name = jeru::resolve_project(name)?;
-            jeru::readme::show(&name)
-        }
-        Some(ReadmeAction::Edit { name }) => {
-            let name = jeru::resolve_project(name)?;
-            jeru::readme::edit(&name)
-        }
-    }
-}
-
-fn run_roadmap(name: Option<String>, action: Option<RoadmapAction>) -> jeru::Result<()> {
-    match action {
-        None => {
-            let name = jeru::resolve_project(name)?;
-            jeru::roadmap::show(&name)
-        }
-        Some(RoadmapAction::Edit { name }) => {
-            let name = jeru::resolve_project(name)?;
-            jeru::roadmap::edit(&name)
-        }
-    }
-}
-
 fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru::Result<()> {
     let name = jeru::resolve_project(project)?;
 
@@ -526,17 +473,37 @@ fn run_list(name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
     Ok(())
 }
 
-fn run_edit(name: Option<String>, folder: bool) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
-    if folder {
-        let dir = jeru::project_dir(&name)?;
-        let status = jeru::code_folder(&dir).status()?;
-        if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+const EDIT_ALIASES: &[(&str, &str)] = &[
+    ("@project", jeru::constants::MANIFEST_FILE),
+    ("@roadmap", jeru::constants::ROADMAP_FILE),
+    ("@readme", jeru::constants::README_FILE),
+];
+
+fn run_edit(filename: Option<String>, project: Option<String>, list_alias: bool) -> jeru::Result<()> {
+    if list_alias {
+        for (alias, target) in EDIT_ALIASES {
+            println!("{alias:<12}{target}");
         }
-        Ok(())
-    } else {
-        jeru::edit_manifest(&name)
+        return Ok(());
+    }
+    let name = jeru::resolve_project(project)?;
+    match filename {
+        None => {
+            let dir = jeru::project_dir(&name)?;
+            let status = jeru::code_folder(&dir).status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            Ok(())
+        }
+        Some(file) => {
+            use std::process::Command;
+            let dir = jeru::project_dir(&name)?;
+            let path = resolve_edit_path(&dir, &file)?;
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            Command::new(&editor).arg(&path).status()?;
+            Ok(())
+        }
     }
 }
 
@@ -592,5 +559,53 @@ fn print_section(title: &str, items: &[String]) {
         for item in items {
             println!("    - {item}");
         }
+    }
+}
+
+fn resolve_edit_path(dir: &std::path::Path, file: &str) -> jeru::Result<std::path::PathBuf> {
+    if let Some((_, filename)) = EDIT_ALIASES.iter().find(|(alias, _)| *alias == file) {
+        return Ok(dir.join(filename));
+    }
+    if file.starts_with('@') {
+        return Err(jeru::Error::UnknownAlias(file.to_string()));
+    }
+    Ok(dir.join(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_aliases_resolve_to_their_filenames() {
+        let dir = std::path::Path::new("/proj");
+        assert_eq!(
+            resolve_edit_path(dir, "@project").unwrap(),
+            dir.join(jeru::constants::MANIFEST_FILE)
+        );
+        assert_eq!(
+            resolve_edit_path(dir, "@roadmap").unwrap(),
+            dir.join(jeru::constants::ROADMAP_FILE)
+        );
+        assert_eq!(
+            resolve_edit_path(dir, "@readme").unwrap(),
+            dir.join(jeru::constants::README_FILE)
+        );
+    }
+
+    #[test]
+    fn unknown_alias_returns_error() {
+        let dir = std::path::Path::new("/proj");
+        let err = resolve_edit_path(dir, "@unknown").unwrap_err();
+        assert!(matches!(err, jeru::Error::UnknownAlias(s) if s == "@unknown"));
+    }
+
+    #[test]
+    fn plain_filename_resolves_under_dir() {
+        let dir = std::path::Path::new("/proj");
+        assert_eq!(
+            resolve_edit_path(dir, "notes.md").unwrap(),
+            dir.join("notes.md")
+        );
     }
 }

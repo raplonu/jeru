@@ -282,13 +282,6 @@ fn add_duplicate_via_absolute_after_relative_returns_error() {
 // ── roadmap ───────────────────────────────────────────────────────────────────
 
 #[test]
-fn roadmap_default_path_is_in_project_dir() {
-    let env = TestEnv::setup();
-    let path = jeru::roadmap::effective_path("alpha").unwrap();
-    assert_eq!(path, env.project_dir("alpha").join("ROADMAP.md"));
-}
-
-#[test]
 fn init_claude_md_includes_roadmap_when_file_exists() {
     let env = TestEnv::setup();
     // Create a ROADMAP.md in the project dir

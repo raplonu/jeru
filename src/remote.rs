@@ -161,7 +161,6 @@ pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
             &p.session,
             "--label",
             &label,
-            "--ignore-vcs",
             "--sync-mode",
             "two-way-resolved",
         ]);

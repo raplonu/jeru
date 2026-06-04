@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Candidate manifest filenames, in lookup order.
-const MANIFEST_FILES: [&str; 2] = ["project.yml", "project.yaml"];
+const MANIFEST_FILES: [&str; 2] = [crate::constants::MANIFEST_FILE, "project.yaml"];
 
 /// The `project.yml` manifest: the single source of truth for a project.
 #[derive(Debug, Clone, Serialize, Deserialize)]

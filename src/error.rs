@@ -29,6 +29,9 @@ pub enum Error {
     #[error("directory '{0}' is not empty; use --force to create the project anyway")]
     DirectoryNotEmpty(String),
 
+    #[error("unknown alias '{0}'; run `jeru edit --list-alias` to see valid aliases")]
+    UnknownAlias(String),
+
     #[error("{0}: existing settings.json is not a JSON object")]
     InvalidSettings(String),
 

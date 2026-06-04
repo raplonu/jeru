@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use crate::cache;
 use crate::config::Config;
-use crate::constants::CLAUDE_MD_FILE;
+use crate::constants::{CLAUDE_MD_FILE, README_FILE, ROADMAP_FILE};
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
-use crate::roadmap;
 use crate::template;
 
 /// A project: a directory living under the project tree.
@@ -81,12 +80,15 @@ pub fn load_manifest(name: &str) -> Result<Manifest> {
 /// path written.
 pub fn init_claude_md(name: &str, force: bool) -> Result<PathBuf> {
     let manifest = load_manifest(name)?;
-    let dest = project_dir(name)?.join(CLAUDE_MD_FILE);
+    let dir = project_dir(name)?;
+    let dest = dir.join(CLAUDE_MD_FILE);
     if dest.exists() && !force {
         return Err(Error::AlreadyExists(dest.to_string_lossy().into_owned()));
     }
-    let roadmap = roadmap::claude_md_path(name)?;
-    let readme = crate::readme::claude_md_path(name)?;
+    let roadmap = dir.join(ROADMAP_FILE);
+    let roadmap = roadmap.exists().then_some(roadmap);
+    let readme = dir.join(README_FILE);
+    let readme = readme.exists().then_some(readme);
     let rendered = template::render_claude_md(&manifest, roadmap.as_deref(), readme.as_deref())?;
     std::fs::write(&dest, rendered)?;
     Ok(dest)

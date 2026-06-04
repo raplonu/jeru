@@ -17,6 +17,9 @@ pub const WORKSPACE_EXT: &str = ".code-workspace";
 pub const CACHE_DIR_NAME: &str = "jeru";
 pub const CURRENT_PROJECT_FILE: &str = "current_project";
 
+// Default manifest filename inside a project directory
+pub const MANIFEST_FILE: &str = "project.yml";
+
 // Default roadmap filename inside a project directory
 pub const ROADMAP_FILE: &str = "ROADMAP.md";
 
