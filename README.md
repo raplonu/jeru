@@ -1,4 +1,4 @@
-# jeru
+# jeru - A fully **vibe coded** rust project manager
 
 Personal project tree manager. Each project bundles its code repos, knowledge sets, and resources into a single manifest so they can be opened together in Claude Code and VSCode with one command — locally or on a remote machine.
 
@@ -49,13 +49,21 @@ jeru create <name> [--active] [--force]
 
 Creates a new project directory under `~/project/<name>/` with a starter `project.yml`. Pass `--active` to immediately set it as the current project, and `--force` to proceed even if the directory already exists and is non-empty.
 
-### Editing the manifest
+### Editing files
 
 ```
-jeru edit [name]
+jeru edit [<filename>] [-p <name>] [--list-alias]
 ```
 
-Opens `project.yml` in `$EDITOR` for direct editing.
+Without a filename, opens the project folder in VSCode. With a filename, opens that file in `$EDITOR`. Filenames can be plain (relative to the project directory) or one of the built-in aliases:
+
+| Alias | File |
+|---|---|
+| `@project` | `project.yml` |
+| `@readme` | `README.md` |
+| `@roadmap` | `ROADMAP.md` |
+
+Run `jeru edit --list-alias` to print the full alias table.
 
 ### Adding entries
 
@@ -70,6 +78,22 @@ Adds a repo, knowledge set, or resource to the project manifest. When `--kind` i
 - File or path with extension → resource
 
 If the kind is deduced, jeru shows an interactive prompt so you can confirm or change it.
+
+### Removing entries
+
+```
+jeru remove <path> [--kind repo|knowledge|resource] [--project <name>]
+```
+
+Removes a repo, knowledge set, or resource from the manifest. Kind detection and the interactive confirmation prompt work the same way as `jeru add`.
+
+### Listing entries
+
+```
+jeru list [<name>] [--kind repo|knowledge|resource]
+```
+
+Lists all repos, knowledge sets, and resources in a project. Pass `--kind` to filter by type.
 
 ### Working locally
 
@@ -114,22 +138,6 @@ Full remote session over SSH. `<host>` is any SSH target (`user@hostname` or an 
 | `--no-resources` | Do not sync resources |
 
 `--repos` and `--remote` can be combined: only repos are synced, Claude and VSCode open in the first repo.
-
-### README
-
-```
-jeru readme [name]           Show the project README
-jeru readme edit [name]      Open the README in $EDITOR (creates it if missing)
-```
-
-### Roadmap
-
-```
-jeru roadmap [name]          Show open roadmap items by section
-jeru roadmap edit [name]     Open the roadmap in $EDITOR (creates it if missing)
-```
-
-The roadmap lives at `~/project/<name>/ROADMAP.md`. `jeru compile` generates a `CLAUDE.md` that automatically includes a roadmap directive if `ROADMAP.md` exists, instructing Claude to read the roadmap at the start of each session and mark items complete as work progresses.
 
 ### Compiling a project
 
