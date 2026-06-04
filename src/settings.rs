@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+use crate::config::Config;
 use crate::constants::{ADDITIONAL_DIRS_KEY, CLAUDE_DIR, SETTINGS_FILE};
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
@@ -10,20 +11,20 @@ use crate::project::{expand_tilde, knowledge_dir, load_manifest, project_dir};
 
 /// All directories a project links — primary repo, repos, resolved knowledge
 /// sets, and resources — as absolute paths, deduplicated and order-preserving.
-pub fn additional_directories(manifest: &Manifest) -> Result<Vec<String>> {
+pub fn additional_directories(config: &Config, manifest: &Manifest) -> Result<Vec<String>> {
     let mut dirs = Vec::new();
 
     if let Some(primary) = &manifest.primary_repo {
-        dirs.push(expand_tilde(primary)?);
+        dirs.push(expand_tilde(primary)?.to_string_lossy().into_owned());
     }
     for repo in &manifest.repos {
-        dirs.push(expand_tilde(repo)?);
+        dirs.push(expand_tilde(repo)?.to_string_lossy().into_owned());
     }
     for id in &manifest.knowledge_sets {
-        dirs.push(knowledge_dir(id)?.to_string_lossy().into_owned());
+        dirs.push(knowledge_dir(config, id).to_string_lossy().into_owned());
     }
     for resource in &manifest.resources {
-        dirs.push(expand_tilde(resource)?);
+        dirs.push(expand_tilde(resource)?.to_string_lossy().into_owned());
     }
 
     let mut seen = HashSet::new();
@@ -36,11 +37,11 @@ pub fn additional_directories(manifest: &Manifest) -> Result<Vec<String>> {
 ///
 /// Existing settings are preserved: only `permissions.additionalDirectories`
 /// is rewritten. Returns the path written.
-pub fn write_settings(name: &str) -> Result<PathBuf> {
-    let manifest = load_manifest(name)?;
-    let dirs = additional_directories(&manifest)?;
+pub fn write_settings(config: &Config, name: &str) -> Result<PathBuf> {
+    let manifest = load_manifest(config, name)?;
+    let dirs = additional_directories(config, &manifest)?;
 
-    let claude_dir = project_dir(name)?.join(CLAUDE_DIR);
+    let claude_dir = project_dir(config, name).join(CLAUDE_DIR);
     std::fs::create_dir_all(&claude_dir)?;
     let path = claude_dir.join(SETTINGS_FILE);
 

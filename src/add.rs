@@ -26,10 +26,9 @@ impl Kind {
 /// - Under the knowledge base dir → [`Kind::Knowledge`]
 /// - Has `.git` or is an existing directory → [`Kind::Repo`]
 /// - Otherwise → [`Kind::Resource`]
-pub fn detect_kind(path: &str) -> Result<Kind> {
+pub fn detect_kind(config: &Config, path: &str) -> Result<Kind> {
     let expanded = to_absolute_path(path)?;
     let p = Path::new(&expanded);
-    let config = Config::load()?;
 
     if p.starts_with(&config.knowledge_dir) {
         return Ok(Kind::Knowledge);
@@ -52,8 +51,8 @@ pub fn detect_kind(path: &str) -> Result<Kind> {
 /// For knowledge sets the path is converted to an ID relative to the
 /// knowledge base directory.  Returns an error if the entry is already
 /// present.
-pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
-    let mut manifest = load_manifest(name)?;
+pub fn add_to_project(config: &Config, name: &str, path: &str, kind: Kind) -> Result<()> {
+    let mut manifest = load_manifest(config, name)?;
 
     match kind {
         Kind::Repo => {
@@ -64,7 +63,7 @@ pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
             manifest.repos.push(abs);
         }
         Kind::Knowledge => {
-            let id = knowledge_id(path)?;
+            let id = knowledge_id(config, path)?;
             if manifest.knowledge_sets.iter().any(|k| k == &id) {
                 return Err(Error::AlreadyExists(format!("knowledge set '{id}'")));
             }
@@ -79,27 +78,30 @@ pub fn add_to_project(name: &str, path: &str, kind: Kind) -> Result<()> {
         }
     }
 
-    manifest.save_to_dir(&project_dir(name)?)
+    manifest.save_to_dir(&project_dir(config, name))
 }
 
 /// Remove `path` with the given `kind` from the manifest of project `name`.
 ///
 /// For knowledge sets the path is converted to an ID before matching.
+/// For repos and resources the path is normalised to an absolute path (matching
+/// how `add_to_project` stores entries) before comparing.
 /// Returns an error if the entry is not found.
-pub fn remove_from_project(name: &str, path: &str, kind: Kind) -> Result<()> {
-    let mut manifest = load_manifest(name)?;
+pub fn remove_from_project(config: &Config, name: &str, path: &str, kind: Kind) -> Result<()> {
+    let mut manifest = load_manifest(config, name)?;
 
     match kind {
         Kind::Repo => {
+            let abs = to_absolute_path(path)?;
             let pos = manifest
                 .repos
                 .iter()
-                .position(|r| r == path)
-                .ok_or_else(|| Error::NotFound(format!("repo '{path}'")))?;
+                .position(|r| r == &abs)
+                .ok_or_else(|| Error::NotFound(format!("repo '{abs}'")))?;
             manifest.repos.remove(pos);
         }
         Kind::Knowledge => {
-            let id = knowledge_id(path)?;
+            let id = knowledge_id(config, path)?;
             let pos = manifest
                 .knowledge_sets
                 .iter()
@@ -108,24 +110,25 @@ pub fn remove_from_project(name: &str, path: &str, kind: Kind) -> Result<()> {
             manifest.knowledge_sets.remove(pos);
         }
         Kind::Resource => {
+            let abs = to_absolute_path(path)?;
             let pos = manifest
                 .resources
                 .iter()
-                .position(|r| r == path)
-                .ok_or_else(|| Error::NotFound(format!("resource '{path}'")))?;
+                .position(|r| r == &abs)
+                .ok_or_else(|| Error::NotFound(format!("resource '{abs}'")))?;
             manifest.resources.remove(pos);
         }
     }
 
-    manifest.save_to_dir(&project_dir(name)?)
+    manifest.save_to_dir(&project_dir(config, name))
 }
 
 /// Return all entries in the project manifest, optionally filtered by kind.
 ///
 /// Each element is `(kind, entry)` where `entry` is the stored string
 /// (path for repos and resources, ID for knowledge sets).
-pub fn list_entries(name: &str, kind: Option<Kind>) -> Result<Vec<(Kind, String)>> {
-    let manifest = load_manifest(name)?;
+pub fn list_entries(config: &Config, name: &str, kind: Option<Kind>) -> Result<Vec<(Kind, String)>> {
+    let manifest = load_manifest(config, name)?;
     let mut out = Vec::new();
 
     if matches!(kind, None | Some(Kind::Repo)) {
@@ -149,19 +152,20 @@ pub fn list_entries(name: &str, kind: Option<Kind>) -> Result<Vec<(Kind, String)
 
 /// Derive the knowledge set ID from a path.
 ///
-/// If the path is under the knowledge base dir, the ID is the relative suffix
-/// (e.g. `~/knowledge/rust/async` → `rust/async`).  Otherwise the last path
-/// component is used as a best-effort fallback.
-fn knowledge_id(path: &str) -> Result<String> {
+/// The path must be under the knowledge base directory; the ID is the relative
+/// suffix (e.g. `~/knowledge/rust/async` → `rust/async`).  Returns an error
+/// for paths outside the knowledge directory to avoid silent ID collisions.
+fn knowledge_id(config: &Config, path: &str) -> Result<String> {
     let expanded = to_absolute_path(path)?;
     let p = Path::new(&expanded);
-    let config = Config::load()?;
 
-    if let Ok(rel) = p.strip_prefix(&config.knowledge_dir) {
-        return Ok(rel.to_string_lossy().into_owned());
-    }
-
-    Ok(p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string()))
+    p.strip_prefix(&config.knowledge_dir)
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .map_err(|_| {
+            Error::NotFound(format!(
+                "path '{}' is not under the knowledge directory '{}'",
+                expanded,
+                config.knowledge_dir.display()
+            ))
+        })
 }

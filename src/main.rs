@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use dialoguer::{Select, theme::ColorfulTheme};
 
-use jeru::{Kind, Manifest};
+use jeru::{Config, Kind, Manifest};
 
 #[derive(Parser)]
 #[command(name = "jeru", about = "Personal project tree manager")]
@@ -157,9 +157,25 @@ enum ClaudeCommand {
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Command::Ls => run_ls(),
-        Command::Use { name } => run_use(&name),
+    // Completions doesn't need Config.
+    if let Command::Completions { shell } = cli.command {
+        generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
+        return;
+    }
+
+    let result = run(cli);
+    if let Err(err) = result {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}
+
+fn run(cli: Cli) -> jeru::Result<()> {
+    let config = Config::load()?;
+
+    match cli.command {
+        Command::Ls => run_ls(&config),
+        Command::Use { name } => run_use(&config, &name),
         Command::Work {
             name,
             remote,
@@ -169,52 +185,49 @@ fn main() {
             no_resources,
             extra,
         } => run_work(
+            &config,
             name,
             remote,
-            repos,
-            no_claude,
-            no_knowledge,
-            no_resources,
+            WorkFlags { repos, no_claude, no_knowledge, no_resources },
             extra,
         ),
-        Command::Info { name } => run_info(name),
+        Command::Info { name } => run_info(&config, name),
         Command::Claude { action } => match action {
-            ClaudeCommand::Project { name, extra } => run_claude_open(name, extra, Target::Project),
-            ClaudeCommand::Repos { name, extra } => run_claude_open(name, extra, Target::Repos),
+            ClaudeCommand::Project { name, extra } => {
+                run_claude_open(&config, name, extra, Target::Project)
+            }
+            ClaudeCommand::Repos { name, extra } => {
+                run_claude_open(&config, name, extra, Target::Repos)
+            }
         },
-        Command::Compile { name } => run_compile(name),
-
-        Command::Completions { shell } => {
-            generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
-            return;
-        }
-        Command::Edit { filename, project, list_alias } => run_edit(filename, project, list_alias),
+        Command::Compile { name } => run_compile(&config, name),
+        Command::Edit {
+            filename,
+            project,
+            list_alias,
+        } => run_edit(&config, filename, project, list_alias),
         Command::Add {
             path,
             kind,
             project,
-        } => run_add(project, path, kind),
+        } => run_add(&config, project, path, kind),
         Command::Remove {
             path,
             kind,
             project,
-        } => run_remove(project, path, kind),
-        Command::List { name, kind } => run_list(name, kind),
+        } => run_remove(&config, project, path, kind),
+        Command::List { name, kind } => run_list(&config, name, kind),
         Command::Create {
             name,
             active,
             force,
-        } => run_create(&name, active, force),
-    };
-
-    if let Err(err) = result {
-        eprintln!("error: {err}");
-        std::process::exit(1);
+        } => run_create(&config, &name, active, force),
+        Command::Completions { .. } => unreachable!("handled before Config::load"),
     }
 }
 
-fn run_ls() -> jeru::Result<()> {
-    let projects = jeru::list_projects()?;
+fn run_ls(config: &Config) -> jeru::Result<()> {
+    let projects = jeru::list_projects(config)?;
     if projects.is_empty() {
         println!("No projects found.");
     } else {
@@ -225,55 +238,47 @@ fn run_ls() -> jeru::Result<()> {
     Ok(())
 }
 
-fn run_use(name: &str) -> jeru::Result<()> {
-    jeru::use_project(name)?;
+fn run_use(config: &Config, name: &str) -> jeru::Result<()> {
+    jeru::use_project(config, name)?;
     println!("Current project: {name}");
     Ok(())
 }
 
 fn run_work(
+    config: &Config,
     name: Option<String>,
     remote: Option<String>,
-    repos: bool,
-    no_claude: bool,
-    no_knowledge: bool,
-    no_resources: bool,
+    flags: WorkFlags,
     extra: Vec<String>,
 ) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
+    let name = jeru::resolve_project(config, name)?;
     match remote {
-        None => run_work_local(&name, repos, &extra),
-        Some(host) => run_work_remote(
-            &name,
-            &host,
-            repos,
-            no_claude,
-            no_knowledge,
-            no_resources,
-            &extra,
-        ),
+        None => run_work_local(config, &name, flags.repos, &extra),
+        Some(host) => run_work_remote(config, &name, &host, flags, &extra),
     }
 }
 
-fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
+fn run_work_local(config: &Config, name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
     // Generate CLAUDE.md once; skip silently if it already exists.
-    match jeru::init_claude_md(name, false) {
+    match jeru::init_claude_md(config, name, false) {
         Ok(path) => println!("Wrote {}", path.display()),
         Err(jeru::Error::AlreadyExists(_)) => {}
         Err(e) => return Err(e),
     }
 
     // Generate workspace once and open it. Skip if it already exists or has no repos.
-    let workspace = match jeru::workspace_path(name) {
-        Ok(p) if p.exists() => Some(p),
-        _ => match jeru::write_workspace(name) {
+    let ws_path = jeru::workspace_path(config, name);
+    let workspace = if ws_path.exists() {
+        Some(ws_path)
+    } else {
+        match jeru::write_workspace(config, name) {
             Ok(p) => {
                 println!("Wrote {}", p.display());
                 Some(p)
             }
             Err(jeru::Error::NoRepos(_)) if !repos => None,
             Err(e) => return Err(e),
-        },
+        }
     };
     if let Some(ws) = &workspace {
         jeru::code_command(ws, &[])
@@ -285,9 +290,9 @@ fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()>
 
     // Claude Code: repos mode opens in the first repo, otherwise the project dir.
     let status = if repos {
-        jeru::claude_for_repos(name, extra)?.status()?
+        jeru::claude_for_repos(config, name, extra)?.status()?
     } else {
-        jeru::claude_for_project(name, extra)?.status()?
+        jeru::claude_for_project(config, name, extra)?.status()?
     };
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -296,12 +301,10 @@ fn run_work_local(name: &str, repos: bool, extra: &[String]) -> jeru::Result<()>
 }
 
 fn run_work_remote(
+    config: &Config,
     name: &str,
     host: &str,
-    repos: bool,
-    no_claude: bool,
-    no_knowledge: bool,
-    no_resources: bool,
+    flags: WorkFlags,
     extra: &[String],
 ) -> jeru::Result<()> {
     use jeru::remote::{
@@ -310,11 +313,11 @@ fn run_work_remote(
         vscode_open_remote, vscode_open_workspace_remote,
     };
 
-    let manifest = jeru::load_manifest(name)?;
+    let manifest = jeru::load_manifest(config, name)?;
     let opts = SyncOptions {
-        knowledge: !no_knowledge,
-        resources: !no_resources,
-        repos_only: repos,
+        knowledge: !flags.no_knowledge,
+        resources: !flags.no_resources,
+        repos_only: flags.repos,
     };
 
     // Fetch remote home once so all path mapping is consistent.
@@ -323,44 +326,47 @@ fn run_work_remote(
     eprintln!("{rhome}");
 
     let local_home = dirs::home_dir().ok_or(jeru::Error::NoHomeDir)?;
-    let pairs = build_sync_pairs(name, &manifest, host, &rhome, &opts)?;
+    let pairs = build_sync_pairs(config, name, &manifest, host, &rhome, &opts)?;
 
     // Generate CLAUDE.md once; skip silently if it already exists.
-    match jeru::init_claude_md(name, false) {
+    match jeru::init_claude_md(config, name, false) {
         Ok(path) => println!("Wrote {}", path.display()),
         Err(jeru::Error::AlreadyExists(_)) => {}
         Err(e) => return Err(e),
     }
 
     // Generate workspace once before mutagen starts so the initial sync carries
-    // it to the remote. pairs[0] is always the project dir.
-    let project_remote_path = &pairs[0].remote_path;
-    let remote_workspace: Option<String> = match jeru::workspace_path(name) {
-        Ok(p) if p.exists() => Some(format!("{project_remote_path}/{name}.code-workspace")),
-        _ => match jeru::write_workspace(name) {
-            Ok(_) => Some(format!("{project_remote_path}/{name}.code-workspace")),
-            Err(jeru::Error::NoRepos(_)) => None,
-            Err(e) => return Err(e),
-        },
+    // it to the remote.
+    let project_remote_path = &pairs.project().remote_path;
+    let remote_workspace: Option<String> = {
+        let ws_path = jeru::workspace_path(config, name);
+        if ws_path.exists() {
+            Some(format!("{project_remote_path}/{name}.code-workspace"))
+        } else {
+            match jeru::write_workspace(config, name) {
+                Ok(_) => Some(format!("{project_remote_path}/{name}.code-workspace")),
+                Err(jeru::Error::NoRepos(_)) => None,
+                Err(e) => return Err(e),
+            }
+        }
     };
 
     // Ensure remote directories exist before mutagen tries to sync into them.
     eprint!("Creating remote directories… ");
-    remote_mkdirs(host, &pairs)?;
+    remote_mkdirs(host, pairs.all())?;
     eprintln!("done");
 
     // Start (or resume) mutagen sessions.
     println!("Starting {} mutagen session(s)…", pairs.len());
-    mutagen_start(&pairs, name)?;
+    mutagen_start(pairs.all(), name)?;
 
     // Determine the remote path that VSCode and Claude will open.
-    let (remote_cwd, claude_add_dirs) = if repos {
+    let (remote_cwd, claude_add_dirs) = if flags.repos {
         let (cwd, add_dirs) = remote_repos_dirs(&manifest, &rhome, &local_home)?;
         (cwd, add_dirs)
     } else {
-        // Project directory is always the first pair in non-repos mode.
-        let cwd = pairs[0].remote_path.clone();
-        let add_dirs = remote_add_dirs(&manifest, &rhome, &local_home, &opts)?;
+        let cwd = pairs.project().remote_path.clone();
+        let add_dirs = remote_add_dirs(config, &manifest, &rhome, &local_home, &opts)?;
         (cwd, add_dirs)
     };
 
@@ -371,7 +377,7 @@ fn run_work_remote(
     }
 
     // Build the SSH Claude command (unless --no-claude).
-    let claude_cmd = if no_claude {
+    let claude_cmd = if flags.no_claude {
         None
     } else {
         Some(claude_ssh_cmd(host, &remote_cwd, &claude_add_dirs, extra))
@@ -384,27 +390,27 @@ fn run_work_remote(
 
     // Clean up mutagen when the user exits.
     println!("Stopping mutagen sessions…");
-    mutagen_stop(&pairs)?;
+    mutagen_stop(pairs.all())?;
     Ok(())
 }
 
-fn run_info(name: Option<String>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
-    let manifest = jeru::load_manifest(&name)?;
+fn run_info(config: &Config, name: Option<String>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, name)?;
+    let manifest = jeru::load_manifest(config, &name)?;
     print_manifest(&manifest);
     Ok(())
 }
 
-fn run_compile(name: Option<String>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
+fn run_compile(config: &Config, name: Option<String>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, name)?;
 
-    let claude_path = jeru::init_claude_md(&name, true)?;
+    let claude_path = jeru::init_claude_md(config, &name, true)?;
     println!("Wrote {}", claude_path.display());
 
-    let settings_path = jeru::write_settings(&name)?;
+    let settings_path = jeru::write_settings(config, &name)?;
     println!("Wrote {}", settings_path.display());
 
-    match jeru::write_workspace(&name) {
+    match jeru::write_workspace(config, &name) {
         Ok(ws) => println!("Wrote {}", ws.display()),
         Err(jeru::Error::NoRepos(_)) => {}
         Err(e) => return Err(e),
@@ -413,16 +419,28 @@ fn run_compile(name: Option<String>) -> jeru::Result<()> {
     Ok(())
 }
 
+struct WorkFlags {
+    repos: bool,
+    no_claude: bool,
+    no_knowledge: bool,
+    no_resources: bool,
+}
+
 enum Target {
     Project,
     Repos,
 }
 
-fn run_claude_open(name: Option<String>, extra: Vec<String>, target: Target) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
+fn run_claude_open(
+    config: &Config,
+    name: Option<String>,
+    extra: Vec<String>,
+    target: Target,
+) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, name)?;
     let mut command = match target {
-        Target::Project => jeru::claude_for_project(&name, &extra)?,
-        Target::Repos => jeru::claude_for_repos(&name, &extra)?,
+        Target::Project => jeru::claude_for_project(config, &name, &extra)?,
+        Target::Repos => jeru::claude_for_repos(config, &name, &extra)?,
     };
     let status = command.status()?;
     if !status.success() {
@@ -431,42 +449,52 @@ fn run_claude_open(name: Option<String>, extra: Vec<String>, target: Target) -> 
     Ok(())
 }
 
-fn run_add(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(project)?;
+fn run_add(
+    config: &Config,
+    project: Option<String>,
+    path: String,
+    kind: Option<KindArg>,
+) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, project)?;
 
     let kind: Kind = match kind {
         Some(k) => k.into(),
         None => {
-            let detected = jeru::detect_kind(&path)?;
+            let detected = jeru::detect_kind(config, &path)?;
             confirm_kind(&path, detected)?
         }
     };
 
-    jeru::add_to_project(&name, &path, kind)?;
+    jeru::add_to_project(config, &name, &path, kind)?;
     println!("Added {} '{}' to project {name}", kind.label(), path);
     Ok(())
 }
 
-fn run_remove(project: Option<String>, path: String, kind: Option<KindArg>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(project)?;
+fn run_remove(
+    config: &Config,
+    project: Option<String>,
+    path: String,
+    kind: Option<KindArg>,
+) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, project)?;
 
     let kind: Kind = match kind {
         Some(k) => k.into(),
         None => {
-            let detected = jeru::detect_kind(&path)?;
+            let detected = jeru::detect_kind(config, &path)?;
             confirm_kind(&path, detected)?
         }
     };
 
-    jeru::remove_from_project(&name, &path, kind)?;
+    jeru::remove_from_project(config, &name, &path, kind)?;
     println!("Removed {} '{}' from project {name}", kind.label(), path);
     Ok(())
 }
 
-fn run_list(name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(name)?;
+fn run_list(config: &Config, name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
+    let name = jeru::resolve_project(config, name)?;
     let kind = kind.map(Kind::from);
-    let entries = jeru::list_entries(&name, kind)?;
+    let entries = jeru::list_entries(config, &name, kind)?;
     for (k, entry) in &entries {
         println!("{}\t{}", k.label(), entry);
     }
@@ -479,17 +507,22 @@ const EDIT_ALIASES: &[(&str, &str)] = &[
     ("@readme", jeru::constants::README_FILE),
 ];
 
-fn run_edit(filename: Option<String>, project: Option<String>, list_alias: bool) -> jeru::Result<()> {
+fn run_edit(
+    config: &Config,
+    filename: Option<String>,
+    project: Option<String>,
+    list_alias: bool,
+) -> jeru::Result<()> {
     if list_alias {
         for (alias, target) in EDIT_ALIASES {
             println!("{alias:<12}{target}");
         }
         return Ok(());
     }
-    let name = jeru::resolve_project(project)?;
+    let name = jeru::resolve_project(config, project)?;
     match filename {
         None => {
-            let dir = jeru::project_dir(&name)?;
+            let dir = jeru::project_dir(config, &name);
             let status = jeru::code_folder(&dir).status()?;
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
@@ -498,20 +531,23 @@ fn run_edit(filename: Option<String>, project: Option<String>, list_alias: bool)
         }
         Some(file) => {
             use std::process::Command;
-            let dir = jeru::project_dir(&name)?;
+            let dir = jeru::project_dir(config, &name);
             let path = resolve_edit_path(&dir, &file)?;
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-            Command::new(&editor).arg(&path).status()?;
+            let status = Command::new(&editor).arg(&path).status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
             Ok(())
         }
     }
 }
 
-fn run_create(name: &str, active: bool, force: bool) -> jeru::Result<()> {
-    let dir = jeru::create_project(name, force)?;
+fn run_create(config: &Config, name: &str, active: bool, force: bool) -> jeru::Result<()> {
+    let dir = jeru::create_project(config, name, force)?;
     println!("Created project '{name}' at {}", dir.display());
     if active {
-        jeru::use_project(name)?;
+        jeru::use_project(config, name)?;
         println!("Current project: {name}");
     }
     Ok(())

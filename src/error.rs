@@ -8,7 +8,7 @@ pub enum Error {
     #[error("could not determine cache directory")]
     NoCacheDir,
 
-    #[error("no project given and no current project set (use `jeru workon <name>`)")]
+    #[error("no project given and no current project set (use `jeru use <name>`)")]
     NoCurrentProject,
 
     #[error("project '{0}' not found")]

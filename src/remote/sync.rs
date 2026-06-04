@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::project::{expand_tilde, knowledge_dir, project_dir};
@@ -25,6 +27,34 @@ pub struct SyncPair {
     pub remote_path: String,
 }
 
+/// The full set of sync pairs for a remote work session.
+///
+/// The project directory pair is always present and accessible by name,
+/// removing the implicit `pairs[0]` assumption from callers.
+pub struct SyncPairs {
+    inner: Vec<SyncPair>,
+}
+
+impl SyncPairs {
+    /// The sync pair for the project directory itself.
+    pub fn project(&self) -> &SyncPair {
+        &self.inner[0]
+    }
+
+    /// All sync pairs as a slice (project pair is first).
+    pub fn all(&self) -> &[SyncPair] {
+        &self.inner
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        false // project pair is always present
+    }
+}
+
 // ── remote home ───────────────────────────────────────────────────────────────
 
 /// Fetch the remote user's home directory via SSH.
@@ -40,7 +70,7 @@ pub fn remote_home(host: &str) -> Result<String> {
 
 /// Map a local absolute path to a remote absolute path, keeping the same
 /// relative suffix under `~/`.
-fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> Result<String> {
+pub(super) fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> Result<String> {
     let rel = local
         .strip_prefix(local_home)
         .map_err(|_| Error::PathNotUnderHome(local.to_string_lossy().into_owned()))?;
@@ -53,27 +83,29 @@ fn session_name(project: &str, local: &Path) -> String {
     let home = dirs::home_dir().unwrap_or_default();
     let rel = local.strip_prefix(&home).unwrap_or(local);
     let slug = rel.to_string_lossy().replace('/', "-");
-    // Truncate so names don't become unwieldy
-    let slug = if slug.len() > 40 { &slug[..40] } else { &slug };
     format!("jeru-{project}-{slug}")
 }
 
 // ── sync pairs ────────────────────────────────────────────────────────────────
 
-/// Build the full list of sync pairs for a project.
+/// Build the full set of sync pairs for a project.
+///
+/// The project directory is always the first (and named) pair; callers access
+/// it via [`SyncPairs::project`] rather than indexing into a plain slice.
 pub fn build_sync_pairs(
+    config: &Config,
     project_name: &str,
     manifest: &Manifest,
     host: &str,
     remote_home: &str,
     opts: &SyncOptions,
-) -> Result<Vec<SyncPair>> {
+) -> Result<SyncPairs> {
     let local_home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
-    let mut pairs = Vec::new();
+    let mut inner = Vec::new();
 
     let mut push = |local: PathBuf| -> Result<()> {
         let rpath = to_remote(&local, &local_home, remote_home)?;
-        pairs.push(SyncPair {
+        inner.push(SyncPair {
             session: session_name(project_name, &local),
             remote: format!("{host}:{rpath}"),
             remote_path: rpath,
@@ -82,31 +114,39 @@ pub fn build_sync_pairs(
         Ok(())
     };
 
-    // Project directory — always included
-    push(project_dir(project_name)?)?;
+    // Project directory — always first
+    push(project_dir(config, project_name))?;
 
-    // Repos — always included
+    // primary_repo + repos, deduplicated by path
+    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+    let mut push_repo = |raw: &str| -> Result<()> {
+        let p = expand_tilde(raw)?;
+        if seen_paths.insert(p.clone()) {
+            push(p)?;
+        }
+        Ok(())
+    };
+    if let Some(primary) = &manifest.primary_repo {
+        push_repo(primary.as_str())?;
+    }
     for repo in &manifest.repos {
-        push(PathBuf::from(expand_tilde(repo)?))?;
+        push_repo(repo.as_str())?;
     }
 
     if !opts.repos_only {
-        // Knowledge sets
         if opts.knowledge {
             for id in &manifest.knowledge_sets {
-                push(knowledge_dir(id)?)?;
+                push(knowledge_dir(config, id))?;
             }
         }
-
-        // Resources
         if opts.resources {
             for res in &manifest.resources {
-                push(PathBuf::from(expand_tilde(res)?))?;
+                push(expand_tilde(res)?)?;
             }
         }
     }
 
-    Ok(pairs)
+    Ok(SyncPairs { inner })
 }
 
 // ── mutagen ───────────────────────────────────────────────────────────────────
@@ -199,107 +239,7 @@ pub fn mutagen_stop(pairs: &[SyncPair]) -> Result<()> {
     Ok(())
 }
 
-// ── VSCode remote ─────────────────────────────────────────────────────────────
-
-/// Open a directory in VSCode via Remote SSH (non-blocking).
-pub fn vscode_open_remote(host: &str, remote_path: &str) -> Result<()> {
-    Command::new("code")
-        .arg("--folder-uri")
-        .arg(format!("vscode-remote://ssh-remote+{host}{remote_path}"))
-        .spawn()?;
-    Ok(())
-}
-
-/// Open a `.code-workspace` file in VSCode via Remote SSH (non-blocking).
-pub fn vscode_open_workspace_remote(host: &str, remote_file_path: &str) -> Result<()> {
-    Command::new("code")
-        .arg("--file-uri")
-        .arg(format!(
-            "vscode-remote://ssh-remote+{host}{remote_file_path}"
-        ))
-        .spawn()?;
-    Ok(())
-}
-
-// ── tmux ──────────────────────────────────────────────────────────────────────
-
-/// Sanitise an arbitrary string for use as a tmux session name.
-pub fn tmux_session_name(project: &str, host: &str) -> String {
-    let slug = host.replace(['@', '.', ':'], "-");
-    format!("jeru-{project}-{slug}")
-}
-
-/// Build the `ssh -t host 'cd … && claude …'` command string for tmux.
-pub fn claude_ssh_cmd(
-    host: &str,
-    remote_project_path: &str,
-    add_dirs: &[String],
-    extra: &[String],
-) -> String {
-    let add = add_dirs
-        .iter()
-        .map(|d| format!("--add-dir {}", sq(d)))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let tail = extra.join(" ");
-    let inner = format!(
-        "cd {rp} && claude {add} {tail}",
-        rp = sq(remote_project_path)
-    );
-    format!("ssh -t {host} {}", sq(&inner))
-}
-
-/// Launch a tmux session with a `sync` window (mutagen monitor) and,
-/// optionally, a `claude` window.  Blocks until the user closes the session,
-/// then returns.
-pub fn launch_tmux(session: &str, claude_cmd: Option<&str>, project: &str) -> Result<()> {
-    // Use the label added at session-creation time so all pairs are covered by
-    // a single monitor command (sync monitor accepts only one session specifier).
-    let monitor_cmd = format!("mutagen sync monitor --label-selector jeru-project={project}");
-
-    // Create session (detached). If it already exists we just re-attach below.
-    let created = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            session,
-            "-n",
-            "sync",
-            &monitor_cmd,
-        ])
-        .status()?
-        .success();
-
-    if created && let Some(cmd) = claude_cmd {
-        Command::new("tmux")
-            .args(["new-window", "-t", session, "-n", "claude", cmd])
-            .status()?;
-        // Start focused on the claude window.
-        Command::new("tmux")
-            .args(["select-window", "-t", &format!("{session}:claude")])
-            .status()?;
-    }
-
-    // Inside an existing tmux session, `attach-session` is rejected
-    // ("sessions should be nested with care"). Use `switch-client` instead,
-    // which replaces the current client's view with the new session.
-    let attach_cmd = if std::env::var("TMUX").is_ok() {
-        "switch-client"
-    } else {
-        "attach-session"
-    };
-    Command::new("tmux").args([attach_cmd, "-t", session]).status()?;
-
-    Ok(())
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Single-quote a shell argument, escaping any single quotes inside.
-fn sq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+// ── remote path helpers ───────────────────────────────────────────────────────
 
 /// Return `(cwd, add_dirs)` for a repos-only remote Claude invocation.
 ///
@@ -313,16 +253,12 @@ pub fn remote_repos_dirs(
     let (first, rest) = manifest
         .repos
         .split_first()
-        .ok_or_else(|| crate::error::Error::NoRepos(String::new()))?;
+        .ok_or_else(|| Error::NoRepos(String::new()))?;
 
-    let cwd = to_remote(
-        &PathBuf::from(expand_tilde(first)?),
-        local_home,
-        remote_home,
-    )?;
+    let cwd = to_remote(&expand_tilde(first)?, local_home, remote_home)?;
     let add_dirs = rest
         .iter()
-        .map(|r| to_remote(&PathBuf::from(expand_tilde(r)?), local_home, remote_home))
+        .map(|r| to_remote(&expand_tilde(r)?, local_home, remote_home))
         .collect::<Result<Vec<_>>>()?;
     Ok((cwd, add_dirs))
 }
@@ -330,6 +266,7 @@ pub fn remote_repos_dirs(
 /// Build the list of remote absolute paths for Claude's `--add-dir` flags,
 /// mirroring the local `additional_directories` logic.
 pub fn remote_add_dirs(
+    config: &Config,
     manifest: &Manifest,
     remote_home: &str,
     local_home: &Path,
@@ -338,35 +275,76 @@ pub fn remote_add_dirs(
     let mut dirs = Vec::new();
 
     if let Some(primary) = &manifest.primary_repo {
-        dirs.push(to_remote(
-            &PathBuf::from(expand_tilde(primary)?),
-            local_home,
-            remote_home,
-        )?);
+        dirs.push(to_remote(&expand_tilde(primary)?, local_home, remote_home)?);
     }
     for repo in &manifest.repos {
-        dirs.push(to_remote(
-            &PathBuf::from(expand_tilde(repo)?),
-            local_home,
-            remote_home,
-        )?);
+        dirs.push(to_remote(&expand_tilde(repo)?, local_home, remote_home)?);
     }
     if opts.knowledge {
         for id in &manifest.knowledge_sets {
-            dirs.push(to_remote(&knowledge_dir(id)?, local_home, remote_home)?);
+            dirs.push(to_remote(&knowledge_dir(config, id), local_home, remote_home)?);
         }
     }
     if opts.resources {
         for res in &manifest.resources {
-            dirs.push(to_remote(
-                &PathBuf::from(expand_tilde(res)?),
-                local_home,
-                remote_home,
-            )?);
+            dirs.push(to_remote(&expand_tilde(res)?, local_home, remote_home)?);
         }
     }
 
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     dirs.retain(|d| seen.insert(d.clone()));
     Ok(dirs)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Single-quote a shell argument, escaping any single quotes inside.
+fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sq_plain_string() {
+        assert_eq!(sq("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn sq_with_single_quote() {
+        assert_eq!(sq("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn sq_empty() {
+        assert_eq!(sq(""), "''");
+    }
+
+    #[test]
+    fn session_name_is_unique_for_different_paths() {
+        let a = session_name("proj", std::path::Path::new("/home/user/code/repo-a"));
+        let b = session_name("proj", std::path::Path::new("/home/user/code/repo-b"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn to_remote_maps_relative_suffix() {
+        let local = std::path::Path::new("/home/alice/code/myrepo");
+        let home = std::path::Path::new("/home/alice");
+        assert_eq!(
+            to_remote(local, home, "/home/bob").unwrap(),
+            "/home/bob/code/myrepo"
+        );
+    }
+
+    #[test]
+    fn to_remote_rejects_path_outside_home() {
+        let local = std::path::Path::new("/tmp/something");
+        let home = std::path::Path::new("/home/alice");
+        assert!(to_remote(local, home, "/home/bob").is_err());
+    }
 }

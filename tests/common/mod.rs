@@ -1,41 +1,33 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
+use jeru::Config;
 use tempfile::TempDir;
 
-// Serialise all tests that touch env vars so they don't interfere with each other.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+/// Serialise tests that call `std::env::set_current_dir`, which is process-wide.
+pub static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// A temporary test environment pointing at a copy of the test fixtures.
-///
-/// Holds the Mutex guard for the duration of the test: env vars are safe to
-/// read and write while the guard is held because no other test can run
-/// concurrently.  The guard is released (and env vars cleared) when this value
-/// is dropped.
 pub struct TestEnv {
     pub dir: TempDir,
-    _guard: MutexGuard<'static, ()>,
 }
 
 impl TestEnv {
-    /// Copy the fixture tree into a fresh temp directory and point the three
-    /// override env vars at it.
-    pub fn setup() -> Self {
-        let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    /// Copy the fixture tree into a fresh temp directory and return a Config
+    /// pointed at it. Tests receive Config directly; no env vars or mutexes needed.
+    pub fn setup() -> (Self, Config) {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         copy_dir(&fixtures, dir.path()).expect("copy fixtures");
 
-        // SAFETY: we hold ENV_LOCK, so no other thread is reading/writing these
-        // vars concurrently.
-        unsafe {
-            std::env::set_var("JERU_PROJECTS_DIR", dir.path().join("projects"));
-            std::env::set_var("JERU_KNOWLEDGE_DIR", dir.path().join("knowledge"));
-            std::env::set_var("JERU_CACHE_DIR", dir.path().join("cache"));
-        }
+        let config = Config {
+            projects_dir: dir.path().join("projects"),
+            knowledge_dir: dir.path().join("knowledge"),
+            cache_dir: dir.path().join("cache"),
+        };
 
-        TestEnv { dir, _guard: guard }
+        (TestEnv { dir }, config)
     }
 
     pub fn projects_dir(&self) -> PathBuf {
@@ -44,17 +36,6 @@ impl TestEnv {
 
     pub fn project_dir(&self, name: &str) -> PathBuf {
         self.projects_dir().join(name)
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        // SAFETY: we still hold ENV_LOCK.
-        unsafe {
-            std::env::remove_var("JERU_PROJECTS_DIR");
-            std::env::remove_var("JERU_KNOWLEDGE_DIR");
-            std::env::remove_var("JERU_CACHE_DIR");
-        }
     }
 }
 

@@ -3,19 +3,20 @@ use std::process::Command;
 
 use serde_json::json;
 
+use crate::config::Config;
 use crate::constants::{CODE_BIN, WORKSPACE_EXT};
 use crate::error::{Error, Result};
 use crate::project::{expand_tilde, load_manifest, project_dir};
 
 /// Path of the project's generated `.code-workspace` file.
-pub fn workspace_path(name: &str) -> Result<PathBuf> {
-    Ok(project_dir(name)?.join(format!("{name}{WORKSPACE_EXT}")))
+pub fn workspace_path(config: &Config, name: &str) -> PathBuf {
+    project_dir(config, name).join(format!("{name}{WORKSPACE_EXT}"))
 }
 
 /// Generate the VSCode workspace for a project, listing its repos as folders.
 /// Returns the path written.
-pub fn write_workspace(name: &str) -> Result<PathBuf> {
-    let manifest = load_manifest(name)?;
+pub fn write_workspace(config: &Config, name: &str) -> Result<PathBuf> {
+    let manifest = load_manifest(config, name)?;
     if manifest.repos.is_empty() {
         return Err(Error::NoRepos(name.to_string()));
     }
@@ -25,12 +26,13 @@ pub fn write_workspace(name: &str) -> Result<PathBuf> {
         .iter()
         .map(|repo| {
             let path = expand_tilde(repo)?;
-            Ok(json!({ "name": folder_name(&path), "path": path }))
+            let path_str = path.to_string_lossy();
+            Ok(json!({ "name": folder_name(&path_str), "path": path_str }))
         })
         .collect::<Result<Vec<_>>>()?;
 
     let workspace = json!({ "folders": folders, "settings": {} });
-    let path = workspace_path(name)?;
+    let path = workspace_path(config, name);
     let mut content = serde_json::to_string_pretty(&workspace)?;
     content.push('\n');
     std::fs::write(&path, content)?;

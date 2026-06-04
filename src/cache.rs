@@ -4,17 +4,13 @@ use crate::config::Config;
 use crate::constants::CURRENT_PROJECT_FILE;
 use crate::error::{Error, Result};
 
-fn cache_dir() -> Result<PathBuf> {
-    Ok(Config::load()?.cache_dir)
-}
-
-fn current_project_file() -> Result<PathBuf> {
-    Ok(cache_dir()?.join(CURRENT_PROJECT_FILE))
+fn current_project_file(config: &Config) -> PathBuf {
+    config.cache_dir.join(CURRENT_PROJECT_FILE)
 }
 
 /// The project currently being worked on, if any.
-pub fn current_project() -> Result<Option<String>> {
-    let path = current_project_file()?;
+pub fn current_project(config: &Config) -> Result<Option<String>> {
+    let path = current_project_file(config);
     if !path.exists() {
         return Ok(None);
     }
@@ -23,18 +19,18 @@ pub fn current_project() -> Result<Option<String>> {
 }
 
 /// Persist the current project name.
-pub fn set_current_project(name: &str) -> Result<()> {
-    let path = current_project_file()?;
+pub fn set_current_project(config: &Config, name: &str) -> Result<()> {
+    let path = current_project_file(config);
     std::fs::create_dir_all(path.parent().expect("cache file has a parent"))?;
     std::fs::write(path, name)?;
     Ok(())
 }
 
 /// Resolve a project name from an optional argument, falling back to the
-/// current project set via `jeru workon`.
-pub fn resolve_project(name: Option<String>) -> Result<String> {
+/// current project set via `jeru use`.
+pub fn resolve_project(config: &Config, name: Option<String>) -> Result<String> {
     match name {
         Some(name) => Ok(name),
-        None => current_project()?.ok_or(Error::NoCurrentProject),
+        None => current_project(config)?.ok_or(Error::NoCurrentProject),
     }
 }
