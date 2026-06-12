@@ -39,6 +39,12 @@ enum Command {
         /// Do not sync resources (remote only)
         #[arg(long, requires = "remote")]
         no_resources: bool,
+        /// Skip removing remote directories after the session ends (remote only)
+        #[arg(long, requires = "remote")]
+        no_cleanup: bool,
+        /// Delete non-empty remote directories at startup instead of aborting (remote only)
+        #[arg(long, requires = "remote")]
+        override_remote: bool,
         /// Arguments after `--` are forwarded to claude
         #[arg(last = true)]
         extra: Vec<String>,
@@ -183,12 +189,14 @@ fn run(cli: Cli) -> jeru::Result<()> {
             no_claude,
             no_knowledge,
             no_resources,
+            no_cleanup,
+            override_remote,
             extra,
         } => run_work(
             &config,
             name,
             remote,
-            WorkFlags { repos, no_claude, no_knowledge, no_resources },
+            WorkFlags { repos, no_claude, no_knowledge, no_resources, no_cleanup, override_remote },
             extra,
         ),
         Command::Info { name } => run_info(&config, name),
@@ -309,8 +317,8 @@ fn run_work_remote(
 ) -> jeru::Result<()> {
     use jeru::remote::{
         SyncOptions, build_sync_pairs, claude_ssh_cmd, launch_tmux, mutagen_start, mutagen_stop,
-        remote_add_dirs, remote_home, remote_mkdirs, remote_repos_dirs, tmux_session_name,
-        vscode_open_remote, vscode_open_workspace_remote,
+        remote_add_dirs, remote_check_empty, remote_cleanup, remote_home, remote_mkdirs,
+        remote_repos_dirs, tmux_session_name, vscode_open_remote, vscode_open_workspace_remote,
     };
 
     let manifest = jeru::load_manifest(config, name)?;
@@ -350,6 +358,28 @@ fn run_work_remote(
             }
         }
     };
+
+    // Abort if any remote directory is already non-empty.  Stale files from a
+    // prior session would be reconciled back into the local tree by mutagen's
+    // two-way sync (e.g. a file deleted locally would reappear).
+    eprint!("Checking remote directories… ");
+    let nonempty = remote_check_empty(host, pairs.all())?;
+    if !nonempty.is_empty() {
+        if flags.override_remote {
+            eprintln!("non-empty, overriding");
+            eprint!("Deleting remote directories… ");
+            remote_cleanup(host, pairs.all())?;
+            eprintln!("done");
+        } else {
+            eprintln!();
+            return Err(jeru::Error::RemoteNotEmpty(
+                host.to_string(),
+                nonempty.join(" "),
+            ));
+        }
+    } else {
+        eprintln!("clean");
+    }
 
     // Ensure remote directories exist before mutagen tries to sync into them.
     eprint!("Creating remote directories… ");
@@ -391,6 +421,14 @@ fn run_work_remote(
     // Clean up mutagen when the user exits.
     println!("Stopping mutagen sessions…");
     mutagen_stop(pairs.all())?;
+
+    // Remove remote directories so the next session starts from a clean slate.
+    // Skip with --no-cleanup when re-uploading large repos would be too costly.
+    if !flags.no_cleanup {
+        eprint!("Cleaning up remote directories… ");
+        remote_cleanup(host, pairs.all())?;
+        eprintln!("done");
+    }
     Ok(())
 }
 
@@ -424,6 +462,8 @@ struct WorkFlags {
     no_claude: bool,
     no_knowledge: bool,
     no_resources: bool,
+    no_cleanup: bool,
+    override_remote: bool,
 }
 
 enum Target {

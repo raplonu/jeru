@@ -151,6 +151,54 @@ pub fn build_sync_pairs(
 
 // ── mutagen ───────────────────────────────────────────────────────────────────
 
+/// Return the remote paths of any directories that already exist and are non-empty.
+///
+/// Call this before `remote_mkdirs` / `mutagen_start` to enforce a clean-slate
+/// invariant: stale files from a previous session (e.g. files deleted locally
+/// but still present on the remote) would be propagated back to local by
+/// mutagen's two-way reconciliation, corrupting the working tree.
+pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>> {
+    // For each path: print it if the directory exists AND is non-empty.
+    let checks = pairs
+        .iter()
+        .map(|p| {
+            let q = sq(&p.remote_path);
+            format!("[ ! -d {q} ] || [ -z \"$(ls -A {q} 2>/dev/null)\" ] || echo {q}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let out = Command::new("ssh").args([host, &checks]).output()?;
+    if !out.status.success() {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+
+    let nonempty: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(String::from)
+        .collect();
+
+    Ok(nonempty)
+}
+
+/// Remove all synced remote directories after a session ends.
+///
+/// This keeps the remote clean so the next `remote_check_empty` passes.
+pub fn remote_cleanup(host: &str, pairs: &[SyncPair]) -> Result<()> {
+    let paths = pairs
+        .iter()
+        .map(|p| sq(&p.remote_path))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cmd = format!("rm -rf {paths}");
+    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    if !ok {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(())
+}
+
 /// Ensure all remote endpoint directories exist via a single SSH call.
 ///
 /// Must be called before `mutagen_start`: mutagen cannot create parent

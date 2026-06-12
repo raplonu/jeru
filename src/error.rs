@@ -56,6 +56,9 @@ pub enum Error {
     #[error("mutagen error: {0}")]
     Mutagen(String),
 
+    #[error("remote '{0}': directories are not empty: {1}\n  a previous session may not have cleaned up; to reset:\n  ssh {0} 'rm -rf {1}'")]
+    RemoteNotEmpty(String, String),
+
     #[error("path '{0}' is not under the home directory and cannot be mapped to a remote path")]
     PathNotUnderHome(String),
 }
