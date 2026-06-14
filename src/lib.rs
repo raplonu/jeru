@@ -7,6 +7,7 @@ pub mod journal;
 pub mod launch;
 pub mod manifest;
 pub mod mcp;
+pub mod obsidian;
 pub mod project;
 pub mod remote;
 pub mod settings;
@@ -21,7 +22,8 @@ pub use error::{Error, Result};
 pub use launch::{claude_for_project, claude_for_repos};
 pub use manifest::Manifest;
 pub use journal::JournalInfo;
-pub use mcp::{read_obsidian_api_key, write_mcp_json, write_mcp_json_for_dir};
+pub use mcp::{mcp_host_port, read_obsidian_api_key, write_mcp_json, write_mcp_json_for_dir};
+pub use obsidian::{ObsidianHandle, ensure_running as ensure_obsidian_running};
 pub use project::{
     Project, create_project, expand_tilde, init_claude_md, knowledge_dir,
     list_projects, load_manifest, project_dir, projects_dir, to_absolute_path, use_project,

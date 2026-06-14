@@ -39,12 +39,28 @@ pub fn tmux_session_name(project: &str, host: &str) -> String {
     format!("jeru-{project}-{slug}")
 }
 
+/// A reverse SSH tunnel exposing the local Obsidian MCP server to the remote.
+///
+/// `-R {port}:{host}:{port}` makes the remote's `host:port` forward back to the
+/// local machine, so the synced `.mcp.json` (which points at the same host:port)
+/// reaches local Obsidian. The token, if known, is injected into the remote
+/// Claude's environment so `${OBSIDIAN_API_KEY}` in `.mcp.json` resolves.
+pub struct McpTunnel {
+    pub host: String,
+    pub port: u16,
+    pub token: Option<String>,
+}
+
 /// Build the `ssh -t host 'cd … && claude …'` command string for tmux.
+///
+/// When `mcp` is set, a reverse port-forward is added and the Obsidian token is
+/// exported inline for the remote Claude process.
 pub fn claude_ssh_cmd(
     host: &str,
     remote_project_path: &str,
     add_dirs: &[String],
     extra: &[String],
+    mcp: Option<&McpTunnel>,
 ) -> String {
     let add = add_dirs
         .iter()
@@ -52,11 +68,21 @@ pub fn claude_ssh_cmd(
         .collect::<Vec<_>>()
         .join(" ");
     let tail = extra.iter().map(|a| sq(a)).collect::<Vec<_>>().join(" ");
+
+    let env = match mcp.and_then(|m| m.token.as_deref()) {
+        Some(token) => format!("OBSIDIAN_API_KEY={} ", sq(token)),
+        None => String::new(),
+    };
     let inner = format!(
-        "cd {rp} && claude {tail} {add}",
+        "cd {rp} && {env}claude {tail} {add}",
         rp = sq(remote_project_path)
     );
-    format!("ssh -t {host} {}", sq(&inner))
+
+    let forward = match mcp {
+        Some(m) => format!("-R {p}:{h}:{p} ", p = m.port, h = m.host),
+        None => String::new(),
+    };
+    format!("ssh -t {forward}{host} {}", sq(&inner))
 }
 
 /// Launch a tmux session with a `sync` window (mutagen monitor) and,
@@ -130,6 +156,7 @@ mod tests {
             "/remote/proj",
             &["/path/with spaces/dir".to_string()],
             &[],
+            None,
         );
         // The path with spaces must appear in the output. The whole inner
         // command is shell-quoted, so the literal quoting style varies, but
@@ -146,6 +173,7 @@ mod tests {
             "/remote/proj",
             &[],
             &["--flag with space".to_string()],
+            None,
         );
         assert!(cmd.contains("'--flag with space'"));
     }
@@ -157,10 +185,52 @@ mod tests {
             "/remote/proj",
             &["/some/dir".to_string()],
             &["remote-control".to_string()],
+            None,
         );
         let extra_pos = cmd.find("remote-control").unwrap();
         let add_pos = cmd.find("--add-dir").unwrap();
         assert!(extra_pos < add_pos, "extra args must appear before --add-dir flags: {cmd}");
+    }
+
+    #[test]
+    fn claude_ssh_cmd_adds_reverse_tunnel_and_token() {
+        let tunnel = McpTunnel {
+            host: "127.0.0.1".to_string(),
+            port: 27123,
+            token: Some("secret-token".to_string()),
+        };
+        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], Some(&tunnel));
+        // Reverse forward present, before the host.
+        assert!(cmd.contains("-R 27123:127.0.0.1:27123"), "cmd: {cmd}");
+        assert!(
+            cmd.find("-R ").unwrap() < cmd.find("myhost").unwrap(),
+            "forward must precede host: {cmd}"
+        );
+        // Token exported before claude (the inner command is itself shell-quoted,
+        // so assert presence + ordering rather than an exact quoted form).
+        let env_pos = cmd.find("OBSIDIAN_API_KEY=").expect("token env present");
+        let claude_pos = cmd.find("claude").unwrap();
+        assert!(env_pos < claude_pos, "token must precede claude: {cmd}");
+        assert!(cmd.contains("secret-token"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn claude_ssh_cmd_tunnel_without_token_omits_env() {
+        let tunnel = McpTunnel {
+            host: "127.0.0.1".to_string(),
+            port: 27123,
+            token: None,
+        };
+        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], Some(&tunnel));
+        assert!(cmd.contains("-R 27123:127.0.0.1:27123"), "cmd: {cmd}");
+        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "no token => no env: {cmd}");
+    }
+
+    #[test]
+    fn claude_ssh_cmd_no_mcp_has_no_tunnel_or_token() {
+        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], None);
+        assert!(!cmd.contains("-R "), "cmd: {cmd}");
+        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
     }
 
     #[test]

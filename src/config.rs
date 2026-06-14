@@ -5,7 +5,8 @@ use figment::providers::{Env, Serialized};
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{
-    CACHE_DIR_NAME, ENV_PREFIX, KNOWLEDGE_DIR, OBSIDIAN_API_KEY_ENV, OBSIDIAN_MCP_URL, PROJECTS_DIR,
+    CACHE_DIR_NAME, ENV_PREFIX, KNOWLEDGE_DIR, OBSIDIAN_API_KEY_ENV, OBSIDIAN_LAUNCH_CMD,
+    OBSIDIAN_MCP_URL, PROJECTS_DIR,
 };
 use crate::error::{Error, Result};
 
@@ -25,6 +26,11 @@ pub struct Config {
     /// Name of the environment variable the generated `.mcp.json` references for
     /// the Obsidian API token (kept out of the file so it is never synced).
     pub obsidian_api_key_env: String,
+    /// Whether `jeru work` may launch Obsidian headlessly when its MCP server is
+    /// not already running (and stop that instance when the session ends).
+    pub obsidian_autostart: bool,
+    /// Shell command (run via `sh -c`) used to launch Obsidian headlessly.
+    pub obsidian_launch_cmd: String,
 }
 
 impl Config {
@@ -46,6 +52,8 @@ impl Config {
             obsidian_mcp_enabled: true,
             obsidian_mcp_url: OBSIDIAN_MCP_URL.to_string(),
             obsidian_api_key_env: OBSIDIAN_API_KEY_ENV.to_string(),
+            obsidian_autostart: true,
+            obsidian_launch_cmd: OBSIDIAN_LAUNCH_CMD.to_string(),
         })
     }
 }

@@ -280,6 +280,10 @@ fn run_work(
 }
 
 fn run_work_local(config: &Config, name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
+    // Start Obsidian headlessly if its MCP server isn't already up, so local
+    // Claude can reach the vault. Stopped on drop (only if we started it).
+    let mut obsidian = jeru::ensure_obsidian_running(config);
+
     // Generate CLAUDE.md once; skip silently if it already exists.
     match jeru::init_claude_md(config, name, false) {
         Ok(path) => println!("Wrote {}", path.display()),
@@ -316,6 +320,8 @@ fn run_work_local(config: &Config, name: &str, repos: bool, extra: &[String]) ->
         jeru::claude_for_project(config, name, extra)?.status()?
     };
     if !status.success() {
+        // process::exit skips destructors, so stop Obsidian explicitly first.
+        obsidian.shutdown();
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
@@ -335,8 +341,16 @@ fn run_work_remote(
     };
 
     let manifest = jeru::load_manifest(config, name)?;
+
+    // Start Obsidian headlessly if needed, before the reverse tunnel is built so
+    // its MCP port is already listening. Stopped on drop, including the `?` early
+    // returns below (only if we started it).
+    let mut obsidian = jeru::ensure_obsidian_running(config);
+
     let opts = SyncOptions {
-        knowledge: !flags.no_knowledge,
+        // Knowledge is served live over the forwarded Obsidian MCP port, so it no
+        // longer needs to be mutagen-synced when MCP is enabled.
+        knowledge: !flags.no_knowledge && !config.obsidian_mcp_enabled,
         resources: !flags.no_resources,
         repos_only: flags.repos,
     };
@@ -354,6 +368,12 @@ fn run_work_remote(
         Ok(path) => println!("Wrote {}", path.display()),
         Err(jeru::Error::AlreadyExists(_)) => {}
         Err(e) => return Err(e),
+    }
+
+    // Ensure .mcp.json is in the project dir so the initial sync carries it to
+    // the remote (it is otherwise only written by `compile`).
+    if let Some(path) = jeru::write_mcp_json(config, name)? {
+        println!("Wrote {}", path.display());
     }
 
     // Generate workspace once before mutagen starts so the initial sync carries
@@ -419,11 +439,19 @@ fn run_work_remote(
         None => vscode_open_remote(host, &remote_cwd)?,
     }
 
-    // Build the SSH Claude command (unless --no-claude).
+    // Build the SSH Claude command (unless --no-claude). When MCP is enabled,
+    // reverse-forward the local Obsidian port so remote Claude reaches the vault.
     let claude_cmd = if flags.no_claude {
         None
     } else {
-        Some(claude_ssh_cmd(host, &remote_cwd, &claude_add_dirs, extra))
+        let tunnel = build_mcp_tunnel(config);
+        Some(claude_ssh_cmd(
+            host,
+            &remote_cwd,
+            &claude_add_dirs,
+            extra,
+            tunnel.as_ref(),
+        ))
     };
 
     // Launch tmux: blocks until the user closes all windows.
@@ -442,7 +470,52 @@ fn run_work_remote(
         remote_cleanup(host, pairs.all())?;
         eprintln!("done");
     }
+
+    // Stop the headless Obsidian we started (no-op otherwise).
+    obsidian.shutdown();
     Ok(())
+}
+
+/// Build the reverse-tunnel description for remote Obsidian MCP access.
+///
+/// Returns `None` when MCP integration is disabled. Emits non-fatal warnings if
+/// the local Obsidian server is unreachable or no token is available.
+fn build_mcp_tunnel(config: &Config) -> Option<jeru::remote::McpTunnel> {
+    if !config.obsidian_mcp_enabled {
+        return None;
+    }
+    let (host, port) = match jeru::mcp_host_port(&config.obsidian_mcp_url) {
+        Some(hp) => hp,
+        None => {
+            eprintln!(
+                "warning: could not parse Obsidian MCP url '{}'; remote MCP access disabled",
+                config.obsidian_mcp_url
+            );
+            return None;
+        }
+    };
+
+    // Pre-flight: is local Obsidian actually listening? (autostart normally
+    // brings it up first; this still catches the disabled-autostart case.)
+    if !jeru::obsidian::port_reachable(&host, port) {
+        eprintln!(
+            "warning: Obsidian MCP server not reachable at {host}:{port} — \
+             start Obsidian or remote MCP access won't work"
+        );
+    }
+
+    let token = std::env::var(&config.obsidian_api_key_env)
+        .ok()
+        .or_else(|| jeru::read_obsidian_api_key(config));
+    if token.is_none() {
+        eprintln!(
+            "warning: no Obsidian token (${} unset and none found in vault); \
+             remote MCP will not authenticate",
+            config.obsidian_api_key_env
+        );
+    }
+
+    Some(jeru::remote::McpTunnel { host, port, token })
 }
 
 fn run_info(config: &Config, name: Option<String>) -> jeru::Result<()> {

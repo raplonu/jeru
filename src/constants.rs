@@ -19,6 +19,12 @@ pub const OBSIDIAN_SERVER_NAME: &str = "obsidian";
 pub const OBSIDIAN_MCP_URL: &str = "http://127.0.0.1:27123/mcp/";
 pub const OBSIDIAN_API_KEY_ENV: &str = "OBSIDIAN_API_KEY";
 
+// Command used to launch Obsidian headlessly (no GUI) when it is not already
+// running, executed via `sh -c`. Xvfb supplies a virtual display and the empty
+// WAYLAND_DISPLAY forces the X11 backend so nothing appears on screen.
+pub const OBSIDIAN_LAUNCH_CMD: &str =
+    "WAYLAND_DISPLAY= xvfb-run -a obsidian --no-sandbox --disable-gpu --ozone-platform=x11";
+
 // VSCode workspace file extension (includes leading dot)
 pub const WORKSPACE_EXT: &str = ".code-workspace";
 

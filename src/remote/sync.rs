@@ -395,4 +395,57 @@ mod tests {
         let home = std::path::Path::new("/home/alice");
         assert!(to_remote(local, home, "/home/bob").is_err());
     }
+
+    fn test_config() -> Config {
+        let home = dirs::home_dir().unwrap();
+        Config {
+            projects_dir: home.join("proj"),
+            knowledge_dir: home.join("knowledge"),
+            cache_dir: home.join(".cache/jeru"),
+            obsidian_mcp_enabled: true,
+            obsidian_mcp_url: "http://127.0.0.1:27123/mcp/".to_string(),
+            obsidian_api_key_env: "OBSIDIAN_API_KEY".to_string(),
+            obsidian_autostart: false,
+            obsidian_launch_cmd: "false".to_string(),
+        }
+    }
+
+    fn test_manifest() -> Manifest {
+        Manifest {
+            name: "proj".to_string(),
+            knowledge_location: "proj".to_string(),
+            primary_repo: None,
+            knowledge_sets: vec!["docs".to_string()],
+            repos: vec!["~/code/r1".to_string()],
+            resources: vec!["~/refs/x".to_string()],
+        }
+    }
+
+    #[test]
+    fn build_sync_pairs_excludes_knowledge_when_disabled() {
+        let home = dirs::home_dir().unwrap();
+        let opts = SyncOptions { knowledge: false, resources: true, repos_only: false };
+        let pairs =
+            build_sync_pairs(&test_config(), "proj", &test_manifest(), "host", "/home/remote", &opts)
+                .unwrap();
+        let locals: Vec<_> = pairs.all().iter().map(|p| p.local.clone()).collect();
+        assert!(locals.contains(&home.join("proj/proj")), "project dir present");
+        assert!(locals.contains(&home.join("code/r1")), "repo present");
+        assert!(locals.contains(&home.join("refs/x")), "resource present");
+        assert!(
+            !locals.contains(&home.join("knowledge/docs")),
+            "knowledge must be excluded: {locals:?}"
+        );
+    }
+
+    #[test]
+    fn build_sync_pairs_includes_knowledge_when_enabled() {
+        let home = dirs::home_dir().unwrap();
+        let opts = SyncOptions { knowledge: true, resources: true, repos_only: false };
+        let pairs =
+            build_sync_pairs(&test_config(), "proj", &test_manifest(), "host", "/home/remote", &opts)
+                .unwrap();
+        let locals: Vec<_> = pairs.all().iter().map(|p| p.local.clone()).collect();
+        assert!(locals.contains(&home.join("knowledge/docs")), "knowledge present: {locals:?}");
+    }
 }

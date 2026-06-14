@@ -59,6 +59,26 @@ pub fn write_mcp_json(config: &Config, name: &str) -> Result<Option<PathBuf>> {
     write_mcp_json_for_dir(&project_dir(config, name), config)
 }
 
+/// Parse the host and port out of an MCP URL (e.g. `http://127.0.0.1:27123/mcp/`).
+///
+/// Falls back to the scheme's default port when none is given. Returns `None`
+/// if the URL has no recognizable authority.
+pub fn mcp_host_port(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority); // drop any userinfo
+    if authority.is_empty() {
+        return None;
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) => Some((host.to_string(), port.parse().ok()?)),
+        None => {
+            let default = if scheme.eq_ignore_ascii_case("https") { 443 } else { 80 };
+            Some((authority.to_string(), default))
+        }
+    }
+}
+
 /// Path to the Obsidian Local REST API plugin config within the vault.
 const REST_API_DATA_JSON: &str = ".obsidian/plugins/obsidian-local-rest-api/data.json";
 
@@ -83,6 +103,8 @@ mod tests {
             obsidian_mcp_enabled: true,
             obsidian_mcp_url: "http://127.0.0.1:27123/mcp/".to_string(),
             obsidian_api_key_env: "OBSIDIAN_API_KEY".to_string(),
+            obsidian_autostart: false,
+            obsidian_launch_cmd: "false".to_string(),
         }
     }
 
@@ -140,6 +162,40 @@ mod tests {
         let result = write_mcp_json_for_dir(dir.path(), &config).unwrap();
         assert!(result.is_none());
         assert!(!dir.path().join(MCP_FILE).exists());
+    }
+
+    #[test]
+    fn mcp_host_port_parses_default_url() {
+        assert_eq!(
+            mcp_host_port("http://127.0.0.1:27123/mcp/"),
+            Some(("127.0.0.1".to_string(), 27123))
+        );
+    }
+
+    #[test]
+    fn mcp_host_port_custom_port() {
+        assert_eq!(
+            mcp_host_port("http://localhost:9999/mcp/"),
+            Some(("localhost".to_string(), 9999))
+        );
+    }
+
+    #[test]
+    fn mcp_host_port_defaults_when_missing() {
+        assert_eq!(
+            mcp_host_port("http://example.com/mcp/"),
+            Some(("example.com".to_string(), 80))
+        );
+        assert_eq!(
+            mcp_host_port("https://example.com/mcp/"),
+            Some(("example.com".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn mcp_host_port_rejects_garbage() {
+        assert_eq!(mcp_host_port("not-a-url"), None);
+        assert_eq!(mcp_host_port("http://host:notaport/"), None);
     }
 
     #[test]

@@ -199,3 +199,81 @@ fn new_journal_entry(name: &str, folder: &str) -> Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn test_config(dir: &Path) -> Config {
+        Config {
+            projects_dir: dir.to_path_buf(),
+            knowledge_dir: dir.to_path_buf(),
+            cache_dir: dir.to_path_buf(),
+            obsidian_mcp_enabled: true,
+            obsidian_mcp_url: "http://127.0.0.1:27123/mcp/".to_string(),
+            obsidian_api_key_env: "OBSIDIAN_API_KEY".to_string(),
+            obsidian_autostart: false,
+            obsidian_launch_cmd: "false".to_string(),
+        }
+    }
+
+    /// Create `.obsidian/plugins/journals/data.json` with the given content.
+    fn write_data_json(dir: &Path, content: &str) {
+        let plugin = dir.join(".obsidian/plugins/journals");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("data.json"), content).unwrap();
+    }
+
+    fn read_data_json(dir: &Path) -> Value {
+        let path = dir.join(".obsidian/plugins/journals/data.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn defaults_when_no_data_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = ensure_journal(&test_config(dir.path()), "proj").unwrap();
+        assert_eq!(info.folder, "project/proj/journal");
+        assert_eq!(info.write_type, "day");
+        assert_eq!(info.date_format, "YYYY-MM-DD");
+        assert!(dir.path().join("project/proj/journal").is_dir());
+    }
+
+    #[test]
+    fn inserts_missing_entry_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        write_data_json(dir.path(), r#"{"journals":{}}"#);
+        let info = ensure_journal(&test_config(dir.path()), "proj").unwrap();
+        assert_eq!(info.folder, "project/proj/journal");
+        let written = read_data_json(dir.path());
+        assert_eq!(written["journals"]["proj"]["folder"], "project/proj/journal");
+        assert_eq!(written["journals"]["proj"]["write"]["type"], "day");
+    }
+
+    #[test]
+    fn reads_custom_folder_and_format() {
+        let dir = tempfile::tempdir().unwrap();
+        write_data_json(
+            dir.path(),
+            r#"{"journals":{"proj":{"folder":"custom/notes","dateFormat":"YYYY/MM/DD","write":{"type":"week"}}}}"#,
+        );
+        let info = ensure_journal(&test_config(dir.path()), "proj").unwrap();
+        assert_eq!(info.folder, "custom/notes");
+        assert_eq!(info.date_format, "YYYY/MM/DD");
+        assert_eq!(info.write_type, "week");
+    }
+
+    #[test]
+    fn preserves_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_data_json(
+            dir.path(),
+            r#"{"journals":{"proj":{"folder":"custom/notes","dateFormat":"YYYY-MM-DD","write":{"type":"day"},"marker":"keep-me"}}}"#,
+        );
+        ensure_journal(&test_config(dir.path()), "proj").unwrap();
+        let written = read_data_json(dir.path());
+        assert_eq!(written["journals"]["proj"]["marker"], "keep-me");
+        assert_eq!(written["journals"]["proj"]["folder"], "custom/notes");
+    }
+}
