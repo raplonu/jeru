@@ -69,10 +69,21 @@ enum Command {
         /// Target shell
         shell: Shell,
     },
+    /// Validate project manifests for common issues
+    Validate {
+        /// Project name to validate; defaults to the current project
+        name: Option<String>,
+        /// Validate all projects
+        #[arg(long)]
+        all: bool,
+    },
     /// Create a new project
     Create {
         /// Project name (new directory under the project tree)
         name: String,
+        /// Subfolder under knowledge/project/ (defaults to project name)
+        #[arg(long)]
+        knowledge_location: Option<String>,
         /// Set this project as the current one after creating it
         #[arg(long)]
         active: bool,
@@ -225,11 +236,13 @@ fn run(cli: Cli) -> jeru::Result<()> {
             project,
         } => run_remove(&config, project, path, kind),
         Command::List { name, kind } => run_list(&config, name, kind),
+        Command::Validate { name, all } => run_validate(&config, name, all),
         Command::Create {
             name,
+            knowledge_location,
             active,
             force,
-        } => run_create(&config, &name, active, force),
+        } => run_create(&config, &name, knowledge_location, active, force),
         Command::Completions { .. } => unreachable!("handled before Config::load"),
     }
 }
@@ -583,8 +596,15 @@ fn run_edit(
     }
 }
 
-fn run_create(config: &Config, name: &str, active: bool, force: bool) -> jeru::Result<()> {
-    let dir = jeru::create_project(config, name, force)?;
+fn run_create(
+    config: &Config,
+    name: &str,
+    knowledge_location: Option<String>,
+    active: bool,
+    force: bool,
+) -> jeru::Result<()> {
+    let loc = knowledge_location.as_deref().unwrap_or(name);
+    let dir = jeru::create_project(config, name, loc, force)?;
     println!("Created project '{name}' at {}", dir.display());
     if active {
         jeru::use_project(config, name)?;
@@ -611,10 +631,44 @@ fn confirm_kind(path: &str, detected: Kind) -> jeru::Result<Kind> {
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
+const GREEN: &str = "\x1b[32m";
+const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
+
+fn run_validate(config: &Config, name: Option<String>, all: bool) -> jeru::Result<()> {
+    let names: Vec<String> = if all {
+        jeru::list_projects(config)?.into_iter().map(|p| p.name).collect()
+    } else {
+        vec![jeru::resolve_project(config, name)?]
+    };
+
+    let mut any_issues = false;
+
+    for name in &names {
+        let issues = jeru::validate_project(config, name)?;
+        if issues.is_empty() {
+            println!("{BOLD}{name}{RESET}  {GREEN}ok{RESET}");
+        } else {
+            any_issues = true;
+            let n = issues.len();
+            let label = if n == 1 { "issue" } else { "issues" };
+            println!("{BOLD}{name}{RESET}  {RED}{n} {label}{RESET}");
+            for issue in &issues {
+                println!("  [{DIM}{}{RESET}] {}", issue.kind.tag(), issue.message);
+            }
+        }
+    }
+
+    if any_issues {
+        std::process::exit(1);
+    }
+    Ok(())
+}
 
 fn print_manifest(m: &Manifest) {
     println!("\n{BOLD}{}{RESET}", m.name);
+
+    println!("  knowledge location: {}", m.knowledge_location);
 
     match &m.primary_repo {
         Some(repo) => println!("  primary repo: {repo}"),

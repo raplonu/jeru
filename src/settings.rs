@@ -27,21 +27,23 @@ pub fn additional_directories(config: &Config, manifest: &Manifest) -> Result<Ve
         dirs.push(expand_tilde(resource)?.to_string_lossy().into_owned());
     }
 
+    // Mandatory project knowledge folder (always present, shared across related projects).
+    let project_knowledge = config
+        .knowledge_dir
+        .join("project")
+        .join(&manifest.knowledge_location);
+    dirs.push(project_knowledge.to_string_lossy().into_owned());
+
     let mut seen = HashSet::new();
     dirs.retain(|dir| seen.insert(dir.clone()));
     Ok(dirs)
 }
 
-/// Generate (or update) `.claude/settings.json` for a project so Claude Code
-/// can read every folder the project links.
-///
-/// Existing settings are preserved: only `permissions.additionalDirectories`
-/// is rewritten. Returns the path written.
-pub fn write_settings(config: &Config, name: &str) -> Result<PathBuf> {
-    let manifest = load_manifest(config, name)?;
-    let dirs = additional_directories(config, &manifest)?;
-
-    let claude_dir = project_dir(config, name).join(CLAUDE_DIR);
+/// Write (or update) `.claude/settings.json` inside `dir` with the given
+/// `dirs` as `additionalDirectories`.  Existing settings are preserved; only
+/// the key is rewritten.  Returns the path written.
+pub fn write_settings_for_dir(dir: &std::path::Path, dirs: &[String]) -> Result<PathBuf> {
+    let claude_dir = dir.join(CLAUDE_DIR);
     std::fs::create_dir_all(&claude_dir)?;
     let path = claude_dir.join(SETTINGS_FILE);
 
@@ -67,4 +69,15 @@ pub fn write_settings(config: &Config, name: &str) -> Result<PathBuf> {
     content.push('\n');
     std::fs::write(&path, content)?;
     Ok(path)
+}
+
+/// Generate (or update) `.claude/settings.json` for a project so Claude Code
+/// can read every folder the project links.
+///
+/// Existing settings are preserved: only `permissions.additionalDirectories`
+/// is rewritten. Returns the path written.
+pub fn write_settings(config: &Config, name: &str) -> Result<PathBuf> {
+    let manifest = load_manifest(config, name)?;
+    let dirs = additional_directories(config, &manifest)?;
+    write_settings_for_dir(&project_dir(config, name), &dirs)
 }

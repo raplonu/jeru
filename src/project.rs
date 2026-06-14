@@ -4,6 +4,7 @@ use crate::cache;
 use crate::config::Config;
 use crate::constants::{CLAUDE_MD_FILE, README_FILE, ROADMAP_FILE};
 use crate::error::{Error, Result};
+use crate::journal;
 use crate::manifest::Manifest;
 use crate::template;
 
@@ -79,6 +80,7 @@ pub fn load_manifest(config: &Config, name: &str) -> Result<Manifest> {
 /// path written.
 pub fn init_claude_md(config: &Config, name: &str, force: bool) -> Result<PathBuf> {
     let manifest = load_manifest(config, name)?;
+    let journal = journal::ensure_journal(config, &manifest.knowledge_location)?;
     let dir = project_dir(config, name);
     let dest = dir.join(CLAUDE_MD_FILE);
     if dest.exists() && !force {
@@ -88,7 +90,8 @@ pub fn init_claude_md(config: &Config, name: &str, force: bool) -> Result<PathBu
     let roadmap = roadmap.exists().then_some(roadmap);
     let readme = dir.join(README_FILE);
     let readme = readme.exists().then_some(readme);
-    let rendered = template::render_claude_md(&manifest, roadmap.as_deref(), readme.as_deref())?;
+    let rendered =
+        template::render_claude_md(&manifest, roadmap.as_deref(), readme.as_deref(), &journal)?;
     std::fs::write(&dest, rendered)?;
     Ok(dest)
 }
@@ -99,7 +102,12 @@ pub fn init_claude_md(config: &Config, name: &str, force: bool) -> Result<PathBu
 /// - Directory present, already has a manifest: always errors.
 /// - Directory present, empty: proceeds without `force`.
 /// - Directory present, non-empty, no manifest: requires `force`.
-pub fn create_project(config: &Config, name: &str, force: bool) -> Result<PathBuf> {
+pub fn create_project(
+    config: &Config,
+    name: &str,
+    knowledge_location: &str,
+    force: bool,
+) -> Result<PathBuf> {
     let dir = project_dir(config, name);
     if dir.is_dir() {
         if Manifest::load_from_dir(&dir).is_ok() {
@@ -114,6 +122,7 @@ pub fn create_project(config: &Config, name: &str, force: bool) -> Result<PathBu
     }
     let manifest = Manifest {
         name: name.to_string(),
+        knowledge_location: knowledge_location.to_string(),
         primary_repo: None,
         knowledge_sets: Vec::new(),
         repos: Vec::new(),

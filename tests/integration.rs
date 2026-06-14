@@ -107,8 +107,8 @@ fn write_settings_includes_all_linked_dirs() {
         .iter()
         .map(|d| d.as_str().unwrap().to_string())
         .collect();
-    // primary_repo + 2 repos (deduped) + 2 knowledge sets + 1 resource
-    assert_eq!(dirs.len(), 5);
+    // primary_repo + 2 repos (deduped) + 2 knowledge sets + 1 resource + 1 project knowledge folder
+    assert_eq!(dirs.len(), 6);
 }
 
 #[test]
@@ -154,17 +154,18 @@ fn use_project_unknown_project_returns_error() {
 #[test]
 fn create_project_makes_dir_and_manifest() {
     let (env, config) = TestEnv::setup();
-    let dir = jeru::create_project(&config, "gamma", false).unwrap();
+    let dir = jeru::create_project(&config, "gamma", "gamma", false).unwrap();
     assert!(dir.is_dir());
     assert_eq!(dir, env.project_dir("gamma"));
     let m = jeru::load_manifest(&config, "gamma").unwrap();
     assert_eq!(m.name, "gamma");
+    assert_eq!(m.knowledge_location, "gamma");
 }
 
 #[test]
 fn create_project_fails_if_manifest_already_exists() {
     let (_env, config) = TestEnv::setup();
-    assert!(jeru::create_project(&config, "alpha", false).is_err());
+    assert!(jeru::create_project(&config, "alpha", "alpha", false).is_err());
 }
 
 #[test]
@@ -175,8 +176,8 @@ fn create_project_non_empty_requires_force() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("somefile.txt"), "data").unwrap();
 
-    assert!(jeru::create_project(&config, "delta", false).is_err());
-    assert!(jeru::create_project(&config, "delta", true).is_ok());
+    assert!(jeru::create_project(&config, "delta", "delta", false).is_err());
+    assert!(jeru::create_project(&config, "delta", "delta", true).is_ok());
 }
 
 // ── write_workspace ──────────────────────────────────────────────────────────

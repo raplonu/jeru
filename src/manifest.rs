@@ -22,6 +22,11 @@ fn find_manifest_path(dir: &Path) -> std::path::PathBuf {
 pub struct Manifest {
     pub name: String,
 
+    /// Subfolder under `knowledge/project/` shared by related projects.
+    /// Defaults to `name` when absent in older manifests.
+    #[serde(default)]
+    pub knowledge_location: String,
+
     /// Optional default working repo for sustained code work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_repo: Option<String>,
@@ -63,6 +68,10 @@ impl Manifest {
             .ok_or_else(|| Error::ManifestNotFound(dir.to_string_lossy().into_owned()))?;
 
         let content = std::fs::read_to_string(path)?;
-        Ok(serde_yaml_ng::from_str(&content)?)
+        let mut m: Self = serde_yaml_ng::from_str(&content)?;
+        if m.knowledge_location.is_empty() {
+            m.knowledge_location = m.name.clone();
+        }
+        Ok(m)
     }
 }

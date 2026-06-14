@@ -53,7 +53,7 @@ pub fn claude_ssh_cmd(
         .join(" ");
     let tail = extra.iter().map(|a| sq(a)).collect::<Vec<_>>().join(" ");
     let inner = format!(
-        "cd {rp} && claude {add} {tail}",
+        "cd {rp} && claude {tail} {add}",
         rp = sq(remote_project_path)
     );
     format!("ssh -t {host} {}", sq(&inner))
@@ -148,6 +148,19 @@ mod tests {
             &["--flag with space".to_string()],
         );
         assert!(cmd.contains("'--flag with space'"));
+    }
+
+    #[test]
+    fn claude_ssh_cmd_extra_args_before_add_dirs() {
+        let cmd = claude_ssh_cmd(
+            "myhost",
+            "/remote/proj",
+            &["/some/dir".to_string()],
+            &["remote-control".to_string()],
+        );
+        let extra_pos = cmd.find("remote-control").unwrap();
+        let add_pos = cmd.find("--add-dir").unwrap();
+        assert!(extra_pos < add_pos, "extra args must appear before --add-dir flags: {cmd}");
     }
 
     #[test]
