@@ -125,6 +125,31 @@ fn additional_directories_deduplicates_primary_repo() {
     assert_eq!(dirs.iter().filter(|d| **d == primary).count(), 1);
 }
 
+// ── .mcp.json ────────────────────────────────────────────────────────────────
+
+#[test]
+fn write_mcp_json_creates_obsidian_server() {
+    let (env, config) = TestEnv::setup();
+    let path = jeru::write_mcp_json(&config, "alpha").unwrap().unwrap();
+    assert_eq!(path, env.project_dir("alpha").join(".mcp.json"));
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(v["mcpServers"]["obsidian"]["type"], "http");
+    assert_eq!(
+        v["mcpServers"]["obsidian"]["headers"]["Authorization"],
+        "Bearer ${OBSIDIAN_API_KEY}"
+    );
+}
+
+#[test]
+fn claude_md_references_obsidian_mcp_server() {
+    let (env, config) = TestEnv::setup();
+    jeru::init_claude_md(&config, "alpha", true).unwrap();
+    let content =
+        std::fs::read_to_string(env.project_dir("alpha").join("CLAUDE.md")).unwrap();
+    assert!(content.contains("obsidian` MCP server"));
+}
+
 // ── workon / resolve_project ─────────────────────────────────────────────────
 
 #[test]

@@ -18,6 +18,7 @@ struct ClaudeContext<'a> {
     roadmap_path: Option<String>,
     readme_path: Option<String>,
     journal_path: String,
+    journal_vault_path: String,
     journal_write_type: String,
     journal_date_format: String,
 }
@@ -42,6 +43,7 @@ pub fn render_claude_md(
         roadmap_path,
         readme_path,
         journal_path: journal.path.to_string_lossy().into_owned(),
+        journal_vault_path: journal.folder.clone(),
         journal_write_type: journal.write_type.clone(),
         journal_date_format: journal.date_format.clone(),
     })?)

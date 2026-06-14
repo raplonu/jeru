@@ -35,6 +35,9 @@ pub enum Error {
     #[error("{0}: existing settings.json is not a JSON object")]
     InvalidSettings(String),
 
+    #[error("{0}: existing .mcp.json is not a JSON object")]
+    InvalidMcpConfig(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

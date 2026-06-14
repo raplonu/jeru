@@ -461,6 +461,25 @@ fn run_compile(config: &Config, name: Option<String>) -> jeru::Result<()> {
     let settings_path = jeru::write_settings(config, &name)?;
     println!("Wrote {}", settings_path.display());
 
+    if let Some(mcp_path) = jeru::write_mcp_json(config, &name)? {
+        println!("Wrote {}", mcp_path.display());
+        // The token is referenced via an env var, not written to the file. If it
+        // is not set, surface the value from the Obsidian plugin so the user can
+        // export it before launching Claude.
+        if std::env::var(&config.obsidian_api_key_env).is_err() {
+            match jeru::read_obsidian_api_key(config) {
+                Some(key) => println!(
+                    "  note: set the Obsidian token before `jeru work`:\n    export {}={key}",
+                    config.obsidian_api_key_env
+                ),
+                None => println!(
+                    "  note: set ${} to your Obsidian Local REST API token before `jeru work`",
+                    config.obsidian_api_key_env
+                ),
+            }
+        }
+    }
+
     match jeru::write_workspace(config, &name) {
         Ok(ws) => println!("Wrote {}", ws.display()),
         Err(jeru::Error::NoRepos(_)) => {}

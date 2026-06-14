@@ -11,6 +11,8 @@ const DATA_JSON: &str = ".obsidian/plugins/journals/data.json";
 pub struct JournalInfo {
     /// Absolute path to the journal folder on disk.
     pub path: PathBuf,
+    /// Vault-relative folder for the journal, e.g. "project/jeru/journal".
+    pub folder: String,
     /// Obsidian journals write type: "day", "week", "month", etc.
     pub write_type: String,
     /// Filename date format, e.g. "YYYY-MM-DD".
@@ -28,10 +30,14 @@ pub fn ensure_journal(config: &Config, knowledge_location: &str) -> Result<Journ
     let journal_dir = knowledge_dir.join("journal");
     std::fs::create_dir_all(&journal_dir)?;
 
+    // Default vault-relative folder; overridden below by the configured value if present.
+    let default_folder = format!("project/{knowledge_location}/journal");
+
     let data_json_path = config.knowledge_dir.join(DATA_JSON);
     if !data_json_path.exists() {
         return Ok(JournalInfo {
             path: journal_dir,
+            folder: default_folder,
             write_type: "day".to_string(),
             date_format: "YYYY-MM-DD".to_string(),
         });
@@ -50,11 +56,10 @@ pub fn ensure_journal(config: &Config, knowledge_location: &str) -> Result<Journ
         .unwrap_or(false);
 
     if absent {
-        let folder = format!("project/{knowledge_location}/journal");
         if let Some(journals) = root["journals"].as_object_mut() {
             journals.insert(
                 knowledge_location.to_string(),
-                new_journal_entry(knowledge_location, &folder),
+                new_journal_entry(knowledge_location, &default_folder),
             );
         }
         let mut content = serde_json::to_string_pretty(&Value::Object(root.clone()))?;
@@ -62,9 +67,14 @@ pub fn ensure_journal(config: &Config, knowledge_location: &str) -> Result<Journ
         std::fs::write(&data_json_path, content)?;
     }
 
-    let (write_type, date_format) = root["journals"]
+    let (folder, write_type, date_format) = root["journals"]
         .get(knowledge_location)
         .map(|e| {
+            let folder = e
+                .get("folder")
+                .and_then(|f| f.as_str())
+                .unwrap_or(&default_folder)
+                .to_string();
             let wt = e
                 .get("write")
                 .and_then(|w| w.get("type"))
@@ -76,12 +86,13 @@ pub fn ensure_journal(config: &Config, knowledge_location: &str) -> Result<Journ
                 .and_then(|f| f.as_str())
                 .unwrap_or("YYYY-MM-DD")
                 .to_string();
-            (wt, df)
+            (folder, wt, df)
         })
-        .unwrap_or_else(|| ("day".to_string(), "YYYY-MM-DD".to_string()));
+        .unwrap_or_else(|| (default_folder.clone(), "day".to_string(), "YYYY-MM-DD".to_string()));
 
     Ok(JournalInfo {
         path: journal_dir,
+        folder,
         write_type,
         date_format,
     })

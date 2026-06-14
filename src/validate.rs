@@ -135,6 +135,9 @@ mod tests {
                 projects_dir: dir.path().join("projects"),
                 knowledge_dir: dir.path().join("knowledge"),
                 cache_dir: dir.path().join("cache"),
+                obsidian_mcp_enabled: true,
+                obsidian_mcp_url: "http://127.0.0.1:27123/mcp/".to_string(),
+                obsidian_api_key_env: "OBSIDIAN_API_KEY".to_string(),
             };
             std::fs::create_dir_all(&config.projects_dir).unwrap();
             std::fs::create_dir_all(&config.knowledge_dir).unwrap();

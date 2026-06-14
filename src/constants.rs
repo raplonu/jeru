@@ -10,6 +10,15 @@ pub const SETTINGS_FILE: &str = "settings.json";
 // settings.json keys
 pub const ADDITIONAL_DIRS_KEY: &str = "additionalDirectories";
 
+// .mcp.json (project-scoped MCP server config consumed by Claude Code)
+pub const MCP_FILE: &str = ".mcp.json";
+pub const MCP_SERVERS_KEY: &str = "mcpServers";
+pub const OBSIDIAN_SERVER_NAME: &str = "obsidian";
+
+// Obsidian MCP integration defaults (overridable via JERU_OBSIDIAN_* env vars)
+pub const OBSIDIAN_MCP_URL: &str = "http://127.0.0.1:27123/mcp/";
+pub const OBSIDIAN_API_KEY_ENV: &str = "OBSIDIAN_API_KEY";
+
 // VSCode workspace file extension (includes leading dot)
 pub const WORKSPACE_EXT: &str = ".code-workspace";
 

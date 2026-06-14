@@ -50,6 +50,14 @@ session to stay aligned with current goals. Mark items `[x]` as they are complet
 
 ## Journal
 
-The project journal is at `{{ journal_path }}`. Notes are named `{{ journal_date_format }}.md` (one per {{ journal_write_type }}).
+The knowledge sets and journal live in an Obsidian vault. Interact with the vault
+through the `obsidian` MCP server (search, read, and write notes) — do NOT write vault
+files directly on disk, so edits stay coherent with Obsidian's editor and index.
 
-At the end of each session, find or create the note for the current {{ journal_write_type }} and prepend a brief summary of what was accomplished.
+The project journal is in the vault at `{{ journal_vault_path }}/`, one note per
+{{ journal_write_type }} named `<date>.md` using the date format `{{ journal_date_format }}`.
+Today's note is `{{ journal_vault_path }}/<today>.md`.
+
+At the end of each session, create or update today's note via the `obsidian` MCP server
+and prepend a brief summary of what was accomplished (insert it before existing content,
+preserving anything already there).
