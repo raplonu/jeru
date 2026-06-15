@@ -5,7 +5,7 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use jeru::{Config, Kind, Manifest};
 
 #[derive(Parser)]
-#[command(name = "jeru", about = "Personal project tree manager")]
+#[command(name = "jeru", about = "Personal project tree manager", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
