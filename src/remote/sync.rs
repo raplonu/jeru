@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Map, Value, json};
 
 use crate::config::Config;
-use crate::constants::ADDITIONAL_DIRS_KEY;
+use crate::constants::{ADDITIONAL_DIRS_KEY, WORKSPACE_EXT};
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::project::{expand_tilde, knowledge_dir, project_dir};
@@ -29,6 +29,9 @@ pub struct SyncPair {
     pub remote: String,
     /// Absolute remote path (without `host:` prefix).
     pub remote_path: String,
+    /// Extra mutagen `--ignore` patterns for this pair, on top of any
+    /// `.gitignore`-derived ones.
+    pub ignore: Vec<String>,
 }
 
 /// Result of comparing a local sync-pair directory against its remote
@@ -95,7 +98,7 @@ pub fn remote_home(host: &str) -> Result<String> {
 
 /// Map a local absolute path to a remote absolute path, keeping the same
 /// relative suffix under `~/`.
-pub(super) fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> Result<String> {
+pub(crate) fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> Result<String> {
     let rel = local
         .strip_prefix(local_home)
         .map_err(|_| Error::PathNotUnderHome(local.to_string_lossy().into_owned()))?;
@@ -134,26 +137,32 @@ pub fn build_sync_pairs(
     let local_home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
     let mut inner = Vec::new();
 
-    let mut push = |local: PathBuf| -> Result<()> {
+    let mut push = |local: PathBuf, ignore: Vec<String>| -> Result<()> {
         let rpath = to_remote(&local, &local_home, remote_home)?;
         inner.push(SyncPair {
             session: session_name(project_name, &local),
             remote: format!("{host}:{rpath}"),
             remote_path: rpath,
             local,
+            ignore,
         });
         Ok(())
     };
 
-    // Project directory — always first
-    push(project_dir(config, project_name))?;
+    // Project directory — always first. The generated `.code-workspace` file
+    // is excluded from sync: local and remote copies list different folder
+    // paths, so each side maintains its own.
+    push(
+        project_dir(config, project_name),
+        vec![format!("{project_name}{WORKSPACE_EXT}")],
+    )?;
 
     // primary_repo + repos, deduplicated by path
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut push_repo = |raw: &str| -> Result<()> {
         let p = expand_tilde(raw)?;
         if seen_paths.insert(p.clone()) {
-            push(p)?;
+            push(p, Vec::new())?;
         }
         Ok(())
     };
@@ -167,12 +176,12 @@ pub fn build_sync_pairs(
     if !opts.repos_only {
         if opts.knowledge {
             for id in &manifest.knowledge_sets {
-                push(knowledge_dir(config, id))?;
+                push(knowledge_dir(config, id), Vec::new())?;
             }
         }
         if opts.resources {
             for res in &manifest.resources {
-                push(expand_tilde(res)?)?;
+                push(expand_tilde(res)?, Vec::new())?;
             }
         }
     }
@@ -412,6 +421,26 @@ pub fn remote_write_settings(host: &str, remote_dir: &str, dirs: &[String]) -> R
     Ok(())
 }
 
+/// Write `content` to `path` on `host` over SSH, creating parent directories
+/// as needed.
+pub fn remote_write_file(host: &str, path: &str, content: &str) -> Result<()> {
+    let dir = Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cmd = format!("mkdir -p {} && cat > {}", sq(&dir), sq(path));
+    let mut child = Command::new("ssh")
+        .args([host, &cmd])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    child.stdin.take().expect("piped stdin").write_all(content.as_bytes())?;
+    let ok = child.wait()?.success();
+    if !ok {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(())
+}
+
 /// Read ignore patterns from a `.gitignore` file in `dir`, if present.
 ///
 /// Returns only actionable lines: empty lines, comments (`#`), and negations
@@ -435,7 +464,8 @@ fn gitignore_patterns(dir: &Path) -> Vec<String> {
 pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
     let label = format!("jeru-project={project}");
     for p in pairs {
-        let patterns = gitignore_patterns(&p.local);
+        let mut patterns = gitignore_patterns(&p.local);
+        patterns.extend(p.ignore.iter().cloned());
         let mut cmd = Command::new("mutagen");
         cmd.args([
             "sync",

@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
+use crate::constants::WORKSPACE_EXT;
 use crate::error::{Error, Result};
 use crate::launch::{prepare_local_session, resolve_obsidian_token};
 use crate::obsidian::{ensure_running, port_reachable};
@@ -10,9 +11,9 @@ use crate::remote::{
     DirDiff, McpTunnel, SyncOptions, SyncPairs, build_sync_pairs, claude_local_cmd,
     remote_add_dirs, remote_capture_pane, remote_check_empty, remote_cleanup, remote_compare,
     remote_home, remote_loop_script, remote_loop_tmux_cmd, remote_mkdirs, remote_repos_dirs,
-    remote_rm_dirs, remote_tmux_name, remote_write_settings, tmux_capture_pane, tmux_has_session,
-    tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri, mutagen_start,
-    write_remote_loop_script,
+    remote_rm_dirs, remote_tmux_name, remote_write_file, remote_write_settings,
+    tmux_capture_pane, tmux_has_session, tmux_name, tmux_new_detached, tmux_new_window,
+    vscode_remote_uri, mutagen_start, write_remote_loop_script,
 };
 
 use super::conflicts::{self, Resolution};
@@ -160,6 +161,20 @@ fn start_remote(
     remote_mkdirs(host, pairs.all())?;
     eprintln!("done");
 
+    // Write a `.code-workspace` file on the remote with folder paths
+    // translated to the remote tree, mirroring `write_workspace` for local
+    // sessions. Excluded from the project dir's mutagen sync (see
+    // `build_sync_pairs`) so it doesn't clash with the local copy.
+    let remote_workspace = match crate::vscode::remote_workspace_content(config, project, &local_home, &rhome) {
+        Ok(content) => {
+            let path = format!("{}/{project}{WORKSPACE_EXT}", pairs.project().remote_path);
+            remote_write_file(host, &path, &content)?;
+            Some(path)
+        }
+        Err(Error::NoRepos(_)) => None,
+        Err(e) => return Err(e),
+    };
+
     println!("Starting {} mutagen session(s)…", pairs.len());
     mutagen_start(pairs.all(), project)?;
 
@@ -187,7 +202,8 @@ fn start_remote(
     tmux_new_detached(tmux, "sync", &monitor_cmd)?;
     tmux_new_window(tmux, "claude", &claude_cmd)?;
 
-    let vscode_url = vscode_remote_uri(host, &remote_cwd);
+    let vscode_target = remote_workspace.unwrap_or_else(|| remote_cwd.clone());
+    let vscode_url = vscode_remote_uri(host, &vscode_target);
     // claude runs in the remote tmux; capture its pane over ssh once it boots.
     let output = poll_capture(|| remote_capture_pane(host, &remote_tmux));
 

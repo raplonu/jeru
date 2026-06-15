@@ -1,16 +1,31 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::constants::{CODE_BIN, WORKSPACE_EXT};
 use crate::error::{Error, Result};
+use crate::manifest::Manifest;
 use crate::project::{expand_tilde, load_manifest, project_dir};
 
 /// Path of the project's generated `.code-workspace` file.
 pub fn workspace_path(config: &Config, name: &str) -> PathBuf {
     project_dir(config, name).join(format!("{name}{WORKSPACE_EXT}"))
+}
+
+/// Build the `.code-workspace` JSON for `manifest`'s repos, resolving each
+/// repo's path to a folder entry via `resolve`.
+fn build_workspace(manifest: &Manifest, resolve: impl Fn(&str) -> Result<String>) -> Result<Value> {
+    let folders = manifest
+        .repos
+        .iter()
+        .map(|repo| {
+            let path_str = resolve(repo)?;
+            Ok(json!({ "name": folder_name(&path_str), "path": path_str }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({ "folders": folders, "settings": {} }))
 }
 
 /// Generate the VSCode workspace for a project, listing its repos as folders.
@@ -21,22 +36,37 @@ pub fn write_workspace(config: &Config, name: &str) -> Result<PathBuf> {
         return Err(Error::NoRepos(name.to_string()));
     }
 
-    let folders = manifest
-        .repos
-        .iter()
-        .map(|repo| {
-            let path = expand_tilde(repo)?;
-            let path_str = path.to_string_lossy();
-            Ok(json!({ "name": folder_name(&path_str), "path": path_str }))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let workspace = json!({ "folders": folders, "settings": {} });
+    let workspace = build_workspace(&manifest, |repo| {
+        Ok(expand_tilde(repo)?.to_string_lossy().into_owned())
+    })?;
     let path = workspace_path(config, name);
     let mut content = serde_json::to_string_pretty(&workspace)?;
     content.push('\n');
     std::fs::write(&path, content)?;
     Ok(path)
+}
+
+/// Render the `.code-workspace` content for `name`'s repos with folder paths
+/// mapped to their locations on the remote host under `remote_home`.
+///
+/// Returns the rendered JSON content; writes nothing.
+pub fn remote_workspace_content(
+    config: &Config,
+    name: &str,
+    local_home: &Path,
+    remote_home: &str,
+) -> Result<String> {
+    let manifest = load_manifest(config, name)?;
+    if manifest.repos.is_empty() {
+        return Err(Error::NoRepos(name.to_string()));
+    }
+
+    let workspace = build_workspace(&manifest, |repo| {
+        crate::remote::to_remote(&expand_tilde(repo)?, local_home, remote_home)
+    })?;
+    let mut content = serde_json::to_string_pretty(&workspace)?;
+    content.push('\n');
+    Ok(content)
 }
 
 /// Build a `code` invocation that opens a workspace file.
@@ -72,5 +102,29 @@ fn folder_name(path: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_workspace_maps_repo_paths() {
+        let manifest = Manifest {
+            name: "proj".to_string(),
+            knowledge_location: "proj".to_string(),
+            primary_repo: None,
+            knowledge_sets: Vec::new(),
+            repos: vec!["~/code/r1".to_string(), "~/code/r2".to_string()],
+            resources: Vec::new(),
+        };
+        let workspace =
+            build_workspace(&manifest, |repo| Ok(format!("/remote/{}", repo.trim_start_matches("~/")))).unwrap();
+        let folders = workspace["folders"].as_array().unwrap();
+        assert_eq!(folders.len(), 2);
+        assert_eq!(folders[0]["path"], "/remote/code/r1");
+        assert_eq!(folders[0]["name"], "r1");
+        assert_eq!(folders[1]["path"], "/remote/code/r2");
+    }
 }
 
