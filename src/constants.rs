@@ -19,11 +19,11 @@ pub const OBSIDIAN_SERVER_NAME: &str = "obsidian";
 pub const OBSIDIAN_MCP_URL: &str = "http://127.0.0.1:27123/mcp/";
 pub const OBSIDIAN_API_KEY_ENV: &str = "OBSIDIAN_API_KEY";
 
-// Command used to launch Obsidian headlessly (no GUI) when it is not already
-// running, executed via `sh -c`. Xvfb supplies a virtual display and the empty
-// WAYLAND_DISPLAY forces the X11 backend so nothing appears on screen.
-pub const OBSIDIAN_LAUNCH_CMD: &str =
-    "WAYLAND_DISPLAY= xvfb-run -a obsidian --no-sandbox --disable-gpu --ozone-platform=x11";
+// Command used to launch Obsidian (normally, with its GUI) when it is not
+// already running, executed via `sh -c`. jeru spawns this fire-and-forget and
+// never stops it — Obsidian is the user's vault editor and stays up across
+// sessions so its MCP server remains reachable.
+pub const OBSIDIAN_LAUNCH_CMD: &str = "obsidian";
 
 // VSCode workspace file extension (includes leading dot)
 pub const WORKSPACE_EXT: &str = ".code-workspace";
@@ -31,6 +31,9 @@ pub const WORKSPACE_EXT: &str = ".code-workspace";
 // jeru cache
 pub const CACHE_DIR_NAME: &str = "jeru";
 pub const CURRENT_PROJECT_FILE: &str = "current_project";
+
+// Subdirectory of the cache holding one JSON state file per active session.
+pub const SESSIONS_DIR: &str = "sessions";
 
 // Default manifest filename inside a project directory
 pub const MANIFEST_FILE: &str = "project.yml";

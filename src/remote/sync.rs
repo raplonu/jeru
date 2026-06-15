@@ -1,8 +1,12 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+use serde_json::{Map, Value, json};
 
 use crate::config::Config;
+use crate::constants::ADDITIONAL_DIRS_KEY;
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::project::{expand_tilde, knowledge_dir, project_dir};
@@ -186,11 +190,19 @@ pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>>
 ///
 /// This keeps the remote clean so the next `remote_check_empty` passes.
 pub fn remote_cleanup(host: &str, pairs: &[SyncPair]) -> Result<()> {
-    let paths = pairs
-        .iter()
-        .map(|p| sq(&p.remote_path))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let dirs: Vec<String> = pairs.iter().map(|p| p.remote_path.clone()).collect();
+    remote_rm_dirs(host, &dirs)
+}
+
+/// Remove the given remote directories via a single `rm -rf` over SSH.
+///
+/// Path-based variant of [`remote_cleanup`] for callers (e.g. `session stop`)
+/// that only have the stored remote paths, not full [`SyncPair`]s.
+pub fn remote_rm_dirs(host: &str, dirs: &[String]) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    let paths = dirs.iter().map(|d| sq(d)).collect::<Vec<_>>().join(" ");
     let cmd = format!("rm -rf {paths}");
     let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
     if !ok {
@@ -211,6 +223,54 @@ pub fn remote_mkdirs(host: &str, pairs: &[SyncPair]) -> Result<()> {
         .join(" ");
     let cmd = format!("mkdir -p {args}");
     let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    if !ok {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(())
+}
+
+/// Write (or update) `.claude/settings.json` inside `remote_dir` on `host` with
+/// `dirs` as `additionalDirectories`, mirroring `write_settings_for_dir` for the
+/// remote side.
+///
+/// Linked directories are written into the settings file rather than passed as
+/// `--add-dir` flags on the `claude` command line: those flags are rejected once
+/// `extra` contains a subcommand (e.g. `claude remote-control --add-dir ...`),
+/// causing claude to exit immediately.
+pub fn remote_write_settings(host: &str, remote_dir: &str, dirs: &[String]) -> Result<()> {
+    let claude_dir = format!("{remote_dir}/.claude");
+    let settings_path = format!("{claude_dir}/settings.json");
+
+    let cat_cmd = format!("cat {} 2>/dev/null", sq(&settings_path));
+    let out = Command::new("ssh").args([host, &cat_cmd]).output()?;
+
+    let mut root = match serde_json::from_slice::<Value>(&out.stdout) {
+        Ok(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+
+    let permissions = root
+        .entry("permissions")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !permissions.is_object() {
+        return Err(Error::InvalidSettings(settings_path));
+    }
+    permissions[ADDITIONAL_DIRS_KEY] = json!(dirs);
+
+    let mut content = serde_json::to_string_pretty(&Value::Object(root))?;
+    content.push('\n');
+
+    let write_cmd = format!("mkdir -p {} && cat > {}", sq(&claude_dir), sq(&settings_path));
+    let mut child = Command::new("ssh")
+        .args([host, &write_cmd])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(content.as_bytes())?;
+    let ok = child.wait()?.success();
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -278,13 +338,22 @@ pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
 
 /// Terminate all mutagen sessions created for this run.
 pub fn mutagen_stop(pairs: &[SyncPair]) -> Result<()> {
-    for p in pairs {
-        // Ignore errors on termination (session may already be gone).
+    let names: Vec<String> = pairs.iter().map(|p| p.session.clone()).collect();
+    mutagen_terminate(&names);
+    Ok(())
+}
+
+/// Terminate mutagen sessions by name.
+///
+/// Name-based variant of [`mutagen_stop`] for callers (e.g. `session stop`) that
+/// only have the stored session names. Errors are ignored (a session may already
+/// be gone).
+pub fn mutagen_terminate(sessions: &[String]) {
+    for s in sessions {
         let _ = Command::new("mutagen")
-            .args(["sync", "terminate", &p.session])
+            .args(["sync", "terminate", s])
             .status();
     }
-    Ok(())
 }
 
 // ── remote path helpers ───────────────────────────────────────────────────────

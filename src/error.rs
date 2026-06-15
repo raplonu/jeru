@@ -59,6 +59,15 @@ pub enum Error {
     #[error("mutagen error: {0}")]
     Mutagen(String),
 
+    #[error("tmux error: {0}")]
+    Tmux(String),
+
+    #[error("no session '{0}' found (run `jeru session ls`)")]
+    SessionNotFound(String),
+
+    #[error("ambiguous session '{0}'; matches: {1} (pass the full id)")]
+    SessionAmbiguous(String, String),
+
     #[error("remote '{0}': directories are not empty: {1}\n  a previous session may not have cleaned up; to reset:\n  ssh {0} 'rm -rf {1}'")]
     RemoteNotEmpty(String, String),
 

@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod obsidian;
 pub mod project;
 pub mod remote;
+pub mod session;
 pub mod settings;
 pub mod template;
 pub mod validate;
@@ -19,15 +20,19 @@ pub use add::{Kind, add_to_project, detect_kind, list_entries, remove_from_proje
 pub use cache::{current_project, resolve_project, set_current_project};
 pub use config::Config;
 pub use error::{Error, Result};
-pub use launch::{claude_for_project, claude_for_repos};
+pub use launch::{
+    LocalLaunch, claude_for_project, claude_for_repos, prepare_local_session,
+    resolve_obsidian_token,
+};
 pub use manifest::Manifest;
 pub use journal::JournalInfo;
 pub use mcp::{mcp_host_port, read_obsidian_api_key, write_mcp_json, write_mcp_json_for_dir};
-pub use obsidian::{ObsidianHandle, ensure_running as ensure_obsidian_running};
+pub use obsidian::ensure_running as ensure_obsidian_running;
 pub use project::{
     Project, create_project, expand_tilde, init_claude_md, knowledge_dir,
     list_projects, load_manifest, project_dir, projects_dir, to_absolute_path, use_project,
 };
+pub use session::{SessionState, StartOptions as SessionStartOptions};
 pub use settings::{additional_directories, write_settings, write_settings_for_dir};
 pub use validate::{Issue as ValidationIssue, IssueKind as ValidationIssueKind, validate_project};
 pub use vscode::{code_command, code_folder, workspace_path, write_workspace};

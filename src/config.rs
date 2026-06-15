@@ -26,10 +26,10 @@ pub struct Config {
     /// Name of the environment variable the generated `.mcp.json` references for
     /// the Obsidian API token (kept out of the file so it is never synced).
     pub obsidian_api_key_env: String,
-    /// Whether `jeru work` may launch Obsidian headlessly when its MCP server is
-    /// not already running (and stop that instance when the session ends).
+    /// Whether `jeru session start` may launch Obsidian (normally) when its MCP
+    /// server is not already running. jeru never stops the instance it starts.
     pub obsidian_autostart: bool,
-    /// Shell command (run via `sh -c`) used to launch Obsidian headlessly.
+    /// Shell command (run via `sh -c`) used to launch Obsidian, fire-and-forget.
     pub obsidian_launch_cmd: String,
 }
 

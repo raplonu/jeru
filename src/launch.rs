@@ -8,6 +8,53 @@ use crate::mcp::{read_obsidian_api_key, write_mcp_json_for_dir};
 use crate::project::{expand_tilde, load_manifest, project_dir};
 use crate::settings::{write_settings, write_settings_for_dir};
 
+/// What a local session needs to launch `claude` in a detached tmux window:
+/// the working directory and the resolved Obsidian token (if any).
+pub struct LocalLaunch {
+    pub cwd: PathBuf,
+    pub token: Option<String>,
+}
+
+/// Resolve the Obsidian API token: an already-set env var wins, otherwise read
+/// it from the vault's Local REST API config. Returns `None` if neither exists.
+pub fn resolve_obsidian_token(config: &Config) -> Option<String> {
+    std::env::var(&config.obsidian_api_key_env)
+        .ok()
+        .or_else(|| read_obsidian_api_key(config))
+}
+
+/// Prepare a local session: write `.claude/settings.json` and `.mcp.json` for
+/// the launch directory and resolve the Obsidian token, returning where to run
+/// `claude` and the token to export. Mirrors [`claude_for_project`] /
+/// [`claude_for_repos`] but yields data for a detached tmux launch instead of a
+/// foreground [`Command`].
+pub fn prepare_local_session(config: &Config, name: &str, repos: bool) -> Result<LocalLaunch> {
+    let cwd = if repos {
+        let manifest = load_manifest(config, name)?;
+        let (first, rest) = manifest
+            .repos
+            .split_first()
+            .ok_or_else(|| Error::NoRepos(name.to_string()))?;
+        let cwd = expand_tilde(first)?;
+        let add_dirs = rest
+            .iter()
+            .map(|repo| expand_tilde(repo).map(|p| p.to_string_lossy().into_owned()))
+            .collect::<Result<Vec<_>>>()?;
+        write_settings_for_dir(&cwd, &add_dirs)?;
+        cwd
+    } else {
+        write_settings(config, name)?;
+        project_dir(config, name)
+    };
+    write_mcp_json_for_dir(&cwd, config)?;
+    let token = if config.obsidian_mcp_enabled {
+        resolve_obsidian_token(config)
+    } else {
+        None
+    };
+    Ok(LocalLaunch { cwd, token })
+}
+
 fn claude_command(cwd: PathBuf, extra: &[String]) -> Command {
     let mut cmd = Command::new(CLAUDE_BIN);
     cmd.current_dir(cwd);
@@ -26,9 +73,7 @@ fn inject_obsidian_token(cmd: &mut Command, config: &Config) {
     if !config.obsidian_mcp_enabled {
         return;
     }
-    let token = std::env::var(&config.obsidian_api_key_env)
-        .ok()
-        .or_else(|| read_obsidian_api_key(config));
+    let token = resolve_obsidian_token(config);
     match token {
         Some(token) => {
             cmd.env(&config.obsidian_api_key_env, token);

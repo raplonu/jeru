@@ -1,9 +1,13 @@
 pub mod launch;
 pub mod sync;
 
-pub use launch::{McpTunnel, claude_ssh_cmd, launch_tmux, tmux_session_name, vscode_open_remote, vscode_open_workspace_remote};
+pub use launch::{
+    McpTunnel, claude_local_cmd, claude_remote_loop_cmd, remote_capture_pane, remote_kill_tmux,
+    remote_tmux_name, tmux_attach, tmux_capture_pane, tmux_has_session, tmux_kill_session,
+    tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri,
+};
 pub use sync::{
     SyncOptions, SyncPair, SyncPairs, build_sync_pairs, mutagen_start, mutagen_stop,
-    remote_add_dirs, remote_check_empty, remote_cleanup, remote_home, remote_mkdirs,
-    remote_repos_dirs,
+    mutagen_terminate, remote_add_dirs, remote_check_empty, remote_cleanup, remote_home,
+    remote_mkdirs, remote_repos_dirs, remote_rm_dirs, remote_write_settings,
 };

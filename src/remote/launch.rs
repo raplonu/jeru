@@ -1,43 +1,35 @@
 use std::process::Command;
 
-use crate::constants::CODE_BIN;
+use crate::constants::CLAUDE_BIN;
 use crate::error::{Error, Result};
 
 // ── VSCode remote ─────────────────────────────────────────────────────────────
 
-/// Open a directory in VSCode via Remote SSH (non-blocking).
-pub fn vscode_open_remote(host: &str, remote_path: &str) -> Result<()> {
-    Command::new(CODE_BIN)
-        .arg("--folder-uri")
-        .arg(format!("vscode-remote://ssh-remote+{host}{remote_path}"))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    Ok(())
+/// The `vscode-remote://` URI that opens `remote_path` on `host` over Remote SSH.
+///
+/// Printed for the user to open (e.g. `code --folder-uri <uri>`) rather than
+/// launching VSCode directly.
+pub fn vscode_remote_uri(host: &str, remote_path: &str) -> String {
+    format!("vscode-remote://ssh-remote+{host}{remote_path}")
 }
 
-/// Open a `.code-workspace` file in VSCode via Remote SSH (non-blocking).
-pub fn vscode_open_workspace_remote(host: &str, remote_file_path: &str) -> Result<()> {
-    Command::new(CODE_BIN)
-        .arg("--file-uri")
-        .arg(format!(
-            "vscode-remote://ssh-remote+{host}{remote_file_path}"
-        ))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    Ok(())
+// ── tmux session naming ────────────────────────────────────────────────────────
+
+/// Sanitise a session id into a tmux-safe session name.
+///
+/// tmux uses `.` and `:` as target separators, so they are not allowed in
+/// session names; `/` would also confuse window targets. Everything else
+/// (including `@`) is preserved so `project@host` stays readable.
+pub fn tmux_name(id: &str) -> String {
+    id.replace(['.', ':', '/'], "-")
 }
 
-// ── tmux ──────────────────────────────────────────────────────────────────────
-
-/// Sanitise an arbitrary string for use as a tmux session name.
-pub fn tmux_session_name(project: &str, host: &str) -> String {
-    let slug = host.replace(['@', '.', ':'], "-");
-    format!("jeru-{project}-{slug}")
+/// The tmux session name used on the *remote* host for a project's claude.
+pub fn remote_tmux_name(project: &str) -> String {
+    tmux_name(&format!("jeru-{project}"))
 }
+
+// ── MCP tunnel ─────────────────────────────────────────────────────────────────
 
 /// A reverse SSH tunnel exposing the local Obsidian MCP server to the remote.
 ///
@@ -51,88 +43,155 @@ pub struct McpTunnel {
     pub token: Option<String>,
 }
 
-/// Build the `ssh -t host 'cd … && claude …'` command string for tmux.
+// ── claude command builders ────────────────────────────────────────────────────
+
+/// The shell command that runs `claude remote-control` for a *local* session,
+/// to be used as a tmux window command.
+pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>) -> String {
+    let env = match token {
+        Some(t) => format!("OBSIDIAN_API_KEY={} ", sq(t)),
+        None => String::new(),
+    };
+    format!(
+        "cd {cwd} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}",
+        cwd = sq(cwd)
+    )
+}
+
+/// The shell command for a *remote* session's tmux window: a self-reconnecting
+/// ssh that runs `claude remote-control` inside a tmux session **on the remote
+/// host**, so claude survives ssh disconnects.
 ///
-/// When `mcp` is set, a reverse port-forward is added and the Obsidian token is
-/// exported inline for the remote Claude process.
-pub fn claude_ssh_cmd(
+/// `tmux new-session -A` creates the remote session (running claude) on first
+/// connect and re-attaches to the still-running claude on every reconnect. The
+/// `-R` reverse tunnel (when `mcp` is set) is re-established each reconnect,
+/// keeping Obsidian MCP reachable.
+pub fn claude_remote_loop_cmd(
     host: &str,
+    remote_tmux: &str,
     remote_project_path: &str,
-    add_dirs: &[String],
-    extra: &[String],
+    spawn: &str,
     mcp: Option<&McpTunnel>,
 ) -> String {
-    let add = add_dirs
-        .iter()
-        .map(|d| format!("--add-dir {}", sq(d)))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let tail = extra.iter().map(|a| sq(a)).collect::<Vec<_>>().join(" ");
-
     let env = match mcp.and_then(|m| m.token.as_deref()) {
         Some(token) => format!("OBSIDIAN_API_KEY={} ", sq(token)),
         None => String::new(),
     };
-    let inner = format!(
-        "cd {rp} && {env}claude {tail} {add}",
+    let claude = format!(
+        "cd {rp} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}",
         rp = sq(remote_project_path)
     );
+    let inner = format!("tmux new-session -A -s {} {}", sq(remote_tmux), sq(&claude));
 
     let forward = match mcp {
         Some(m) => format!("-R {p}:{h}:{p} ", p = m.port, h = m.host),
         None => String::new(),
     };
-    format!("ssh -t {forward}{host} {}", sq(&inner))
+    let ssh = format!("ssh -t {forward}{host} {}", sq(&inner));
+    // Reconnect loop: if ssh drops (laptop sleep, network move), wait briefly and
+    // re-attach to the remote tmux (claude is still running there).
+    format!("while true; do {ssh}; echo '[jeru] ssh disconnected; reconnecting…'; sleep 2; done")
 }
 
-/// Launch a tmux session with a `sync` window (mutagen monitor) and,
-/// optionally, a `claude` window.  Blocks until the user closes the session,
-/// then returns.
-pub fn launch_tmux(session: &str, claude_cmd: Option<&str>, project: &str) -> Result<()> {
-    // Use the label added at session-creation time so all pairs are covered by
-    // a single monitor command (sync monitor accepts only one session specifier).
-    let monitor_cmd = format!("mutagen sync monitor --label-selector jeru-project={project}");
+// ── tmux control ───────────────────────────────────────────────────────────────
 
-    // Create session (detached). If it already exists we just re-attach below.
-    let created = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            session,
-            "-n",
-            "sync",
-            &monitor_cmd,
-        ])
-        .status()?
-        .success();
+/// Width/height for detached sessions. A detached session has no client to size
+/// it, so it defaults to 80 columns and `capture-pane` returns claude's output
+/// wrapped at that width — splitting long remote-control URLs across rows. A
+/// wide pane keeps the URL on one line. On `inspect`, attaching resizes the
+/// session to the client's terminal, so this only affects the detached period.
+const DETACHED_WIDTH: &str = "240";
+const DETACHED_HEIGHT: &str = "50";
 
-    if created && let Some(cmd) = claude_cmd {
-        Command::new("tmux")
-            .args(["new-window", "-t", session, "-n", "claude", cmd])
-            .status()?;
-        // Start focused on the claude window.
-        Command::new("tmux")
-            .args(["select-window", "-t", &format!("{session}:claude")])
-            .status()?;
+/// Create a detached tmux session with a first window running `cmd`.
+pub fn tmux_new_detached(session: &str, window: &str, cmd: &str) -> Result<()> {
+    tmux_status(&[
+        "new-session", "-d", "-x", DETACHED_WIDTH, "-y", DETACHED_HEIGHT, "-s", session, "-n",
+        window, cmd,
+    ])
+}
+
+/// Add a window running `cmd` to an existing session.
+pub fn tmux_new_window(session: &str, window: &str, cmd: &str) -> Result<()> {
+    tmux_status(&["new-window", "-t", session, "-n", window, cmd])
+}
+
+/// Whether a tmux session with the given name exists.
+pub fn tmux_has_session(session: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", session])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Kill a tmux session. A missing session is treated as success.
+pub fn tmux_kill_session(session: &str) -> Result<()> {
+    if !tmux_has_session(session) {
+        return Ok(());
     }
+    tmux_status(&["kill-session", "-t", session])
+}
 
+/// Capture the visible contents of a tmux pane (e.g. `session:window`).
+///
+/// `-J` joins wrapped lines so a URL that spans rows is returned intact.
+pub fn tmux_capture_pane(target: &str) -> Result<String> {
+    let out = Command::new("tmux")
+        .args(["capture-pane", "-p", "-J", "-t", target])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Tmux(format!("capture-pane {target} failed")));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Attach to (or, when already inside tmux, switch to) a session. Blocks until
+/// the user detaches — used by `jeru session inspect`.
+pub fn tmux_attach(session: &str) -> Result<()> {
     // Inside an existing tmux session, `attach-session` is rejected
-    // ("sessions should be nested with care"). Use `switch-client` instead,
-    // which replaces the current client's view with the new session.
+    // ("sessions should be nested with care"). Use `switch-client` instead.
     let attach_cmd = if std::env::var("TMUX").is_ok() {
         "switch-client"
     } else {
         "attach-session"
     };
-    let ok = Command::new("tmux")
-        .args([attach_cmd, "-t", session])
-        .status()?
-        .success();
-    if !ok {
-        return Err(Error::Mutagen(format!("tmux {attach_cmd} failed")));
-    }
+    tmux_status(&[attach_cmd, "-t", session])
+}
 
+fn tmux_status(args: &[&str]) -> Result<()> {
+    let ok = Command::new("tmux").args(args).status()?.success();
+    if !ok {
+        return Err(Error::Tmux(format!("tmux {} failed", args.join(" "))));
+    }
+    Ok(())
+}
+
+// ── remote tmux control (over ssh) ─────────────────────────────────────────────
+
+/// Capture the remote claude tmux pane over ssh (`-J` joins wrapped lines).
+pub fn remote_capture_pane(host: &str, remote_tmux: &str) -> Result<String> {
+    let cmd = format!("tmux capture-pane -p -J -t {}", sq(remote_tmux));
+    let out = Command::new("ssh").args([host, &cmd]).output()?;
+    if !out.status.success() {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Kill the remote claude tmux session over ssh (gracefully ending claude). A
+/// missing session is treated as success.
+pub fn remote_kill_tmux(host: &str, remote_tmux: &str) -> Result<()> {
+    let cmd = format!(
+        "tmux has-session -t {t} 2>/dev/null && tmux kill-session -t {t} || true",
+        t = sq(remote_tmux)
+    );
+    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    if !ok {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
     Ok(())
 }
 
@@ -150,94 +209,106 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_ssh_cmd_quotes_add_dirs_with_spaces() {
-        let cmd = claude_ssh_cmd(
-            "myhost",
-            "/remote/proj",
-            &["/path/with spaces/dir".to_string()],
-            &[],
-            None,
-        );
-        // The path with spaces must appear in the output. The whole inner
-        // command is shell-quoted, so the literal quoting style varies, but
-        // the path substring is always present.
-        assert!(cmd.contains("/path/with spaces/dir"), "cmd: {cmd}");
-        // The space must not split the path across two separate --add-dir tokens.
-        assert!(!cmd.contains("spaces/dir --"), "unexpected split: {cmd}");
+    fn tmux_name_sanitises_separators() {
+        assert_eq!(tmux_name("proj@user@host.example.com"), "proj@user@host-example-com");
+        assert_eq!(tmux_name("a/b:c.d"), "a-b-c-d");
+        assert_eq!(tmux_name("plain"), "plain");
     }
 
     #[test]
-    fn claude_ssh_cmd_quotes_extra_args() {
-        let cmd = claude_ssh_cmd(
-            "myhost",
-            "/remote/proj",
-            &[],
-            &["--flag with space".to_string()],
-            None,
-        );
-        assert!(cmd.contains("'--flag with space'"));
+    fn remote_tmux_name_prefixes_and_sanitises() {
+        assert_eq!(remote_tmux_name("my.proj"), "jeru-my-proj");
     }
 
     #[test]
-    fn claude_ssh_cmd_extra_args_before_add_dirs() {
-        let cmd = claude_ssh_cmd(
-            "myhost",
-            "/remote/proj",
-            &["/some/dir".to_string()],
-            &["remote-control".to_string()],
-            None,
+    fn vscode_remote_uri_format() {
+        assert_eq!(
+            vscode_remote_uri("user@host", "/home/u/p"),
+            "vscode-remote://ssh-remote+user@host/home/u/p"
         );
-        let extra_pos = cmd.find("remote-control").unwrap();
-        let add_pos = cmd.find("--add-dir").unwrap();
-        assert!(extra_pos < add_pos, "extra args must appear before --add-dir flags: {cmd}");
     }
 
     #[test]
-    fn claude_ssh_cmd_adds_reverse_tunnel_and_token() {
+    fn local_cmd_with_token_and_spawn() {
+        let cmd = claude_local_cmd("/home/u/proj", "worktree", Some("secret"));
+        assert!(cmd.contains("cd '/home/u/proj'"), "cmd: {cmd}");
+        assert!(cmd.contains("OBSIDIAN_API_KEY='secret'"), "cmd: {cmd}");
+        assert!(cmd.contains("claude remote-control --spawn worktree"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn local_cmd_without_token_omits_env() {
+        let cmd = claude_local_cmd("/home/u/proj", "same-dir", None);
+        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
+        assert!(cmd.contains("claude remote-control --spawn same-dir"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn remote_loop_wraps_remote_tmux_and_reconnects() {
+        let cmd = claude_remote_loop_cmd("myhost", "jeru-proj", "/remote/proj", "session", None);
+        // Runs claude inside a remote tmux session via new-session -A.
+        assert!(cmd.contains("tmux new-session -A -s"), "cmd: {cmd}");
+        assert!(cmd.contains("jeru-proj"), "cmd: {cmd}");
+        assert!(cmd.contains("remote-control --spawn session"), "cmd: {cmd}");
+        // Self-reconnecting loop.
+        assert!(cmd.contains("while true"), "cmd: {cmd}");
+        // No tunnel when mcp is None.
+        assert!(!cmd.contains("-R "), "cmd: {cmd}");
+        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
+    }
+
+    /// Whether `cmd` is syntactically valid POSIX shell (parsed, not executed).
+    fn sh_parses(cmd: &str) -> bool {
+        Command::new("sh")
+            .args(["-n", "-c", cmd])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn local_cmd_is_valid_shell() {
+        // Paths/tokens with awkward characters must survive quoting.
+        let cmd = claude_local_cmd("/home/u/it's a dir", "same-dir", Some("to'ken"));
+        assert!(sh_parses(&cmd), "not valid shell: {cmd}");
+    }
+
+    #[test]
+    fn remote_loop_is_valid_shell() {
+        // The remote loop nests three quoting levels (loop → ssh → remote tmux);
+        // make sure the whole thing still parses as shell.
+        let tunnel = McpTunnel {
+            host: "127.0.0.1".to_string(),
+            port: 27123,
+            token: Some("to'ken".to_string()),
+        };
+        let cmd = claude_remote_loop_cmd(
+            "user@host",
+            "jeru-proj",
+            "/home/u/it's a dir",
+            "worktree",
+            Some(&tunnel),
+        );
+        assert!(sh_parses(&cmd), "not valid shell: {cmd}");
+    }
+
+    #[test]
+    fn remote_loop_adds_reverse_tunnel_and_token() {
         let tunnel = McpTunnel {
             host: "127.0.0.1".to_string(),
             port: 27123,
             token: Some("secret-token".to_string()),
         };
-        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], Some(&tunnel));
-        // Reverse forward present, before the host.
+        let cmd =
+            claude_remote_loop_cmd("myhost", "jeru-proj", "/remote/proj", "same-dir", Some(&tunnel));
         assert!(cmd.contains("-R 27123:127.0.0.1:27123"), "cmd: {cmd}");
         assert!(
             cmd.find("-R ").unwrap() < cmd.find("myhost").unwrap(),
             "forward must precede host: {cmd}"
         );
-        // Token exported before claude (the inner command is itself shell-quoted,
-        // so assert presence + ordering rather than an exact quoted form).
         let env_pos = cmd.find("OBSIDIAN_API_KEY=").expect("token env present");
-        let claude_pos = cmd.find("claude").unwrap();
+        let claude_pos = cmd.find("remote-control").unwrap();
         assert!(env_pos < claude_pos, "token must precede claude: {cmd}");
         assert!(cmd.contains("secret-token"), "cmd: {cmd}");
-    }
-
-    #[test]
-    fn claude_ssh_cmd_tunnel_without_token_omits_env() {
-        let tunnel = McpTunnel {
-            host: "127.0.0.1".to_string(),
-            port: 27123,
-            token: None,
-        };
-        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], Some(&tunnel));
-        assert!(cmd.contains("-R 27123:127.0.0.1:27123"), "cmd: {cmd}");
-        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "no token => no env: {cmd}");
-    }
-
-    #[test]
-    fn claude_ssh_cmd_no_mcp_has_no_tunnel_or_token() {
-        let cmd = claude_ssh_cmd("myhost", "/remote/proj", &[], &[], None);
-        assert!(!cmd.contains("-R "), "cmd: {cmd}");
-        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
-    }
-
-    #[test]
-    fn tmux_session_name_sanitises_host() {
-        assert_eq!(
-            tmux_session_name("myproj", "user@host.example.com"),
-            "jeru-myproj-user-host-example-com"
-        );
     }
 }

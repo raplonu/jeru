@@ -20,34 +20,10 @@ enum Command {
         /// Project name (directory under the project tree)
         name: String,
     },
-    /// Open Claude Code and VSCode for a project
-    Work {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-        /// SSH host to work on remotely (e.g. user@hostname)
-        #[arg(long)]
-        remote: Option<String>,
-        /// Work only on repos: Claude opens in the first repo, only repos are synced remotely
-        #[arg(long)]
-        repos: bool,
-        /// Skip Claude (remote only)
-        #[arg(long, requires = "remote")]
-        no_claude: bool,
-        /// Do not sync knowledge sets (remote only)
-        #[arg(long, requires = "remote")]
-        no_knowledge: bool,
-        /// Do not sync resources (remote only)
-        #[arg(long, requires = "remote")]
-        no_resources: bool,
-        /// Skip removing remote directories after the session ends (remote only)
-        #[arg(long, requires = "remote")]
-        no_cleanup: bool,
-        /// Delete non-empty remote directories at startup instead of aborting (remote only)
-        #[arg(long, requires = "remote")]
-        override_remote: bool,
-        /// Arguments after `--` are forwarded to claude
-        #[arg(last = true)]
-        extra: Vec<String>,
+    /// Manage background work sessions (detached tmux running claude remote-control)
+    Session {
+        #[command(subcommand)]
+        action: SessionCommand,
     },
     /// Show the manifest for a project
     Info {
@@ -152,6 +128,62 @@ impl From<KindArg> for Kind {
 }
 
 #[derive(Subcommand)]
+enum SessionCommand {
+    /// Start a background session for a project (locally or on a remote host)
+    Start {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+        /// SSH host to run the session on remotely (e.g. user@hostname)
+        #[arg(long)]
+        remote: Option<String>,
+        /// claude remote-control spawn mode
+        #[arg(long, value_enum, default_value_t = SpawnArg::SameDir)]
+        spawn: SpawnArg,
+        /// Work only on repos: claude opens in the first repo, only repos synced remotely
+        #[arg(long)]
+        repos: bool,
+        /// Do not sync resources (remote only)
+        #[arg(long, requires = "remote")]
+        no_resources: bool,
+        /// Skip removing remote directories when the session is stopped (remote only)
+        #[arg(long, requires = "remote")]
+        no_cleanup: bool,
+        /// Delete non-empty remote directories at startup instead of aborting (remote only)
+        #[arg(long, requires = "remote")]
+        override_remote: bool,
+    },
+    /// List active sessions
+    Ls,
+    /// Stop a session and clean up
+    Stop {
+        /// Session id (project or project@host); defaults to the current project
+        id: Option<String>,
+    },
+    /// Attach to a session's tmux to watch claude
+    Inspect {
+        /// Session id (project or project@host); defaults to the current project
+        id: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SpawnArg {
+    SameDir,
+    Worktree,
+    Session,
+}
+
+impl SpawnArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            SpawnArg::SameDir => "same-dir",
+            SpawnArg::Worktree => "worktree",
+            SpawnArg::Session => "session",
+        }
+    }
+}
+
+#[derive(Subcommand)]
 enum ClaudeCommand {
     /// Open Claude Code in the project directory, with all linked folders
     Project {
@@ -193,23 +225,7 @@ fn run(cli: Cli) -> jeru::Result<()> {
     match cli.command {
         Command::Ls => run_ls(&config),
         Command::Use { name } => run_use(&config, &name),
-        Command::Work {
-            name,
-            remote,
-            repos,
-            no_claude,
-            no_knowledge,
-            no_resources,
-            no_cleanup,
-            override_remote,
-            extra,
-        } => run_work(
-            &config,
-            name,
-            remote,
-            WorkFlags { repos, no_claude, no_knowledge, no_resources, no_cleanup, override_remote },
-            extra,
-        ),
+        Command::Session { action } => run_session(&config, action),
         Command::Info { name } => run_info(&config, name),
         Command::Claude { action } => match action {
             ClaudeCommand::Project { name, extra } => {
@@ -265,257 +281,48 @@ fn run_use(config: &Config, name: &str) -> jeru::Result<()> {
     Ok(())
 }
 
-fn run_work(
-    config: &Config,
-    name: Option<String>,
-    remote: Option<String>,
-    flags: WorkFlags,
-    extra: Vec<String>,
-) -> jeru::Result<()> {
-    let name = jeru::resolve_project(config, name)?;
-    match remote {
-        None => run_work_local(config, &name, flags.repos, &extra),
-        Some(host) => run_work_remote(config, &name, &host, flags, &extra),
+fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
+    use jeru::session;
+
+    match action {
+        SessionCommand::Start {
+            name,
+            remote,
+            spawn,
+            repos,
+            no_resources,
+            no_cleanup,
+            override_remote,
+        } => {
+            let project = jeru::resolve_project(config, name)?;
+            let opts = jeru::SessionStartOptions {
+                spawn: spawn.as_str().to_string(),
+                repos,
+                no_resources,
+                no_cleanup,
+                override_remote,
+            };
+            session::start(config, &project, remote.as_deref(), &opts)
+        }
+        SessionCommand::Ls => session::list(config),
+        SessionCommand::Stop { id } => {
+            let id = resolve_session_id(config, id)?;
+            session::stop(config, &id)
+        }
+        SessionCommand::Inspect { id } => {
+            let id = resolve_session_id(config, id)?;
+            session::inspect(config, &id)
+        }
     }
 }
 
-fn run_work_local(config: &Config, name: &str, repos: bool, extra: &[String]) -> jeru::Result<()> {
-    // Start Obsidian headlessly if its MCP server isn't already up, so local
-    // Claude can reach the vault. Stopped on drop (only if we started it).
-    let mut obsidian = jeru::ensure_obsidian_running(config);
-
-    // Generate CLAUDE.md once; skip silently if it already exists.
-    match jeru::init_claude_md(config, name, false) {
-        Ok(path) => println!("Wrote {}", path.display()),
-        Err(jeru::Error::AlreadyExists(_)) => {}
-        Err(e) => return Err(e),
+/// A session id given explicitly, or the current project's name as a fallback
+/// (matched against active sessions by `SessionState::find`).
+fn resolve_session_id(config: &Config, id: Option<String>) -> jeru::Result<String> {
+    match id {
+        Some(id) => Ok(id),
+        None => jeru::resolve_project(config, None),
     }
-
-    // Generate workspace once and open it. Skip if it already exists or has no repos.
-    let ws_path = jeru::workspace_path(config, name);
-    let workspace = if ws_path.exists() {
-        Some(ws_path)
-    } else {
-        match jeru::write_workspace(config, name) {
-            Ok(p) => {
-                println!("Wrote {}", p.display());
-                Some(p)
-            }
-            Err(jeru::Error::NoRepos(_)) if !repos => None,
-            Err(e) => return Err(e),
-        }
-    };
-    if let Some(ws) = &workspace {
-        jeru::code_command(ws, &[])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-    }
-
-    // Claude Code: repos mode opens in the first repo, otherwise the project dir.
-    let status = if repos {
-        jeru::claude_for_repos(config, name, extra)?.status()?
-    } else {
-        jeru::claude_for_project(config, name, extra)?.status()?
-    };
-    if !status.success() {
-        // process::exit skips destructors, so stop Obsidian explicitly first.
-        obsidian.shutdown();
-        std::process::exit(status.code().unwrap_or(1));
-    }
-    Ok(())
-}
-
-fn run_work_remote(
-    config: &Config,
-    name: &str,
-    host: &str,
-    flags: WorkFlags,
-    extra: &[String],
-) -> jeru::Result<()> {
-    use jeru::remote::{
-        SyncOptions, build_sync_pairs, claude_ssh_cmd, launch_tmux, mutagen_start, mutagen_stop,
-        remote_add_dirs, remote_check_empty, remote_cleanup, remote_home, remote_mkdirs,
-        remote_repos_dirs, tmux_session_name, vscode_open_remote, vscode_open_workspace_remote,
-    };
-
-    let manifest = jeru::load_manifest(config, name)?;
-
-    // Start Obsidian headlessly if needed, before the reverse tunnel is built so
-    // its MCP port is already listening. Stopped on drop, including the `?` early
-    // returns below (only if we started it).
-    let mut obsidian = jeru::ensure_obsidian_running(config);
-
-    let opts = SyncOptions {
-        // Knowledge is served live over the forwarded Obsidian MCP port, so it no
-        // longer needs to be mutagen-synced when MCP is enabled.
-        knowledge: !flags.no_knowledge && !config.obsidian_mcp_enabled,
-        resources: !flags.no_resources,
-        repos_only: flags.repos,
-    };
-
-    // Fetch remote home once so all path mapping is consistent.
-    eprint!("Connecting to {host} to resolve remote home… ");
-    let rhome = remote_home(host)?;
-    eprintln!("{rhome}");
-
-    let local_home = dirs::home_dir().ok_or(jeru::Error::NoHomeDir)?;
-    let pairs = build_sync_pairs(config, name, &manifest, host, &rhome, &opts)?;
-
-    // Generate CLAUDE.md once; skip silently if it already exists.
-    match jeru::init_claude_md(config, name, false) {
-        Ok(path) => println!("Wrote {}", path.display()),
-        Err(jeru::Error::AlreadyExists(_)) => {}
-        Err(e) => return Err(e),
-    }
-
-    // Ensure .mcp.json is in the project dir so the initial sync carries it to
-    // the remote (it is otherwise only written by `compile`).
-    if let Some(path) = jeru::write_mcp_json(config, name)? {
-        println!("Wrote {}", path.display());
-    }
-
-    // Generate workspace once before mutagen starts so the initial sync carries
-    // it to the remote.
-    let project_remote_path = &pairs.project().remote_path;
-    let remote_workspace: Option<String> = {
-        let ws_path = jeru::workspace_path(config, name);
-        if ws_path.exists() {
-            Some(format!("{project_remote_path}/{name}.code-workspace"))
-        } else {
-            match jeru::write_workspace(config, name) {
-                Ok(_) => Some(format!("{project_remote_path}/{name}.code-workspace")),
-                Err(jeru::Error::NoRepos(_)) => None,
-                Err(e) => return Err(e),
-            }
-        }
-    };
-
-    // Abort if any remote directory is already non-empty.  Stale files from a
-    // prior session would be reconciled back into the local tree by mutagen's
-    // two-way sync (e.g. a file deleted locally would reappear).
-    eprint!("Checking remote directories… ");
-    let nonempty = remote_check_empty(host, pairs.all())?;
-    if !nonempty.is_empty() {
-        if flags.override_remote {
-            eprintln!("non-empty, overriding");
-            eprint!("Deleting remote directories… ");
-            remote_cleanup(host, pairs.all())?;
-            eprintln!("done");
-        } else {
-            eprintln!();
-            return Err(jeru::Error::RemoteNotEmpty(
-                host.to_string(),
-                nonempty.join(" "),
-            ));
-        }
-    } else {
-        eprintln!("clean");
-    }
-
-    // Ensure remote directories exist before mutagen tries to sync into them.
-    eprint!("Creating remote directories… ");
-    remote_mkdirs(host, pairs.all())?;
-    eprintln!("done");
-
-    // Start (or resume) mutagen sessions.
-    println!("Starting {} mutagen session(s)…", pairs.len());
-    mutagen_start(pairs.all(), name)?;
-
-    // Determine the remote path that VSCode and Claude will open.
-    let (remote_cwd, claude_add_dirs) = if flags.repos {
-        let (cwd, add_dirs) = remote_repos_dirs(&manifest, &rhome, &local_home)?;
-        (cwd, add_dirs)
-    } else {
-        let cwd = pairs.project().remote_path.clone();
-        let add_dirs = remote_add_dirs(config, &manifest, &rhome, &local_home, &opts)?;
-        (cwd, add_dirs)
-    };
-
-    // Open VSCode: workspace file when available, project folder otherwise.
-    match &remote_workspace {
-        Some(ws) => vscode_open_workspace_remote(host, ws)?,
-        None => vscode_open_remote(host, &remote_cwd)?,
-    }
-
-    // Build the SSH Claude command (unless --no-claude). When MCP is enabled,
-    // reverse-forward the local Obsidian port so remote Claude reaches the vault.
-    let claude_cmd = if flags.no_claude {
-        None
-    } else {
-        let tunnel = build_mcp_tunnel(config);
-        Some(claude_ssh_cmd(
-            host,
-            &remote_cwd,
-            &claude_add_dirs,
-            extra,
-            tunnel.as_ref(),
-        ))
-    };
-
-    // Launch tmux: blocks until the user closes all windows.
-    let session = tmux_session_name(name, host);
-    println!("Launching tmux session '{session}'…");
-    launch_tmux(&session, claude_cmd.as_deref(), name)?;
-
-    // Clean up mutagen when the user exits.
-    println!("Stopping mutagen sessions…");
-    mutagen_stop(pairs.all())?;
-
-    // Remove remote directories so the next session starts from a clean slate.
-    // Skip with --no-cleanup when re-uploading large repos would be too costly.
-    if !flags.no_cleanup {
-        eprint!("Cleaning up remote directories… ");
-        remote_cleanup(host, pairs.all())?;
-        eprintln!("done");
-    }
-
-    // Stop the headless Obsidian we started (no-op otherwise).
-    obsidian.shutdown();
-    Ok(())
-}
-
-/// Build the reverse-tunnel description for remote Obsidian MCP access.
-///
-/// Returns `None` when MCP integration is disabled. Emits non-fatal warnings if
-/// the local Obsidian server is unreachable or no token is available.
-fn build_mcp_tunnel(config: &Config) -> Option<jeru::remote::McpTunnel> {
-    if !config.obsidian_mcp_enabled {
-        return None;
-    }
-    let (host, port) = match jeru::mcp_host_port(&config.obsidian_mcp_url) {
-        Some(hp) => hp,
-        None => {
-            eprintln!(
-                "warning: could not parse Obsidian MCP url '{}'; remote MCP access disabled",
-                config.obsidian_mcp_url
-            );
-            return None;
-        }
-    };
-
-    // Pre-flight: is local Obsidian actually listening? (autostart normally
-    // brings it up first; this still catches the disabled-autostart case.)
-    if !jeru::obsidian::port_reachable(&host, port) {
-        eprintln!(
-            "warning: Obsidian MCP server not reachable at {host}:{port} — \
-             start Obsidian or remote MCP access won't work"
-        );
-    }
-
-    let token = std::env::var(&config.obsidian_api_key_env)
-        .ok()
-        .or_else(|| jeru::read_obsidian_api_key(config));
-    if token.is_none() {
-        eprintln!(
-            "warning: no Obsidian token (${} unset and none found in vault); \
-             remote MCP will not authenticate",
-            config.obsidian_api_key_env
-        );
-    }
-
-    Some(jeru::remote::McpTunnel { host, port, token })
 }
 
 fn run_info(config: &Config, name: Option<String>) -> jeru::Result<()> {
@@ -542,11 +349,11 @@ fn run_compile(config: &Config, name: Option<String>) -> jeru::Result<()> {
         if std::env::var(&config.obsidian_api_key_env).is_err() {
             match jeru::read_obsidian_api_key(config) {
                 Some(key) => println!(
-                    "  note: set the Obsidian token before `jeru work`:\n    export {}={key}",
+                    "  note: set the Obsidian token before `jeru session start`:\n    export {}={key}",
                     config.obsidian_api_key_env
                 ),
                 None => println!(
-                    "  note: set ${} to your Obsidian Local REST API token before `jeru work`",
+                    "  note: set ${} to your Obsidian Local REST API token before `jeru session start`",
                     config.obsidian_api_key_env
                 ),
             }
@@ -560,15 +367,6 @@ fn run_compile(config: &Config, name: Option<String>) -> jeru::Result<()> {
     }
 
     Ok(())
-}
-
-struct WorkFlags {
-    repos: bool,
-    no_claude: bool,
-    no_knowledge: bool,
-    no_resources: bool,
-    no_cleanup: bool,
-    override_remote: bool,
 }
 
 enum Target {
