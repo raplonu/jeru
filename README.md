@@ -31,88 +31,64 @@ Paths are stored as written (`~/…` or absolute). Knowledge set IDs are resolve
 
 ## Commands
 
-### Navigation
+The CLI is organised into three groups — `jeru project` (alias `p`) for managing
+projects, `jeru session` (alias `s`) for running work sessions, and `jeru claude`
+for opening Claude Code directly — plus `jeru completions`.
+
+### Managing projects — `jeru project` / `jeru p`
 
 ```
-jeru ls                    List all projects
-jeru use <name>            Set the current project (persisted across commands)
-jeru info [name] [--kind repo|knowledge|resource]   Show the project manifest
+jeru project ls                         List all projects
+jeru project use <name>                 Set the current project (persisted)
+jeru project info [name] [--kind repo|knowledge|resource]   Show the manifest
+jeru project create <name> [--active] [--force]
+jeru project compile [name]             Regenerate derived files
+jeru project validate [name] [--all]    Check manifests for issues
+jeru project edit [<filename>] [-p <name>] [--list-alias]
+jeru project add <path> [--kind repo|knowledge|resource] [-p <name>]
+jeru project remove <path> [--kind repo|knowledge|resource] [-p <name>]
 ```
 
-`jeru info` prints the full manifest; pass `--kind`/`-k` to show only repos,
-knowledge sets, or resources.
+Most subcommands accept an optional project name; when omitted they fall back to
+the current project set by `jeru project use`. Subcommands have short aliases:
+`use`→`u`, `info`→`i`, `create`→`new`, `compile`→`c`, `validate`→`check`,
+`edit`→`e`, `remove`→`rm` (e.g. `jeru p i` for `jeru project info`).
 
-Most commands accept an optional project name; when omitted they fall back to the current project set by `jeru use`.
-
-Most commands also have short aliases: `use`→`u`, `info`→`i`, `compile`→`c`, `edit`→`e`, `remove`→`rm`, `create`→`new`, `validate`→`check`, `session`→`s` (with `session start`→`up`, `session stop`→`down`).
-
-### Creating a project
-
-```
-jeru create <name> [--active] [--force]
-```
-
-Creates a new project directory under `~/project/<name>/` with a starter `project.yml`. Pass `--active` to immediately set it as the current project, and `--force` to proceed even if the directory already exists and is non-empty.
-
-### Editing files
-
-```
-jeru edit [<filename>] [-p <name>] [--list-alias]
-```
-
-Without a filename, opens the project folder in VSCode. With a filename, opens that file in `$EDITOR`. Filenames can be plain (relative to the project directory) or one of the built-in aliases:
-
-| Alias | File |
-|---|---|
-| `@project` | `project.yml` |
-| `@readme` | `README.md` |
-| `@roadmap` | `ROADMAP.md` |
-
-Run `jeru edit --list-alias` to print the full alias table.
-
-### Adding entries
-
-```
-jeru add <path> [--kind repo|knowledge|resource] [--project <name>]
-```
-
-Adds a repo, knowledge set, or resource to the project manifest. When `--kind` is omitted the kind is deduced from the path:
-
-- Under `~/knowledge/` → knowledge set (ID extracted automatically)
-- Existing directory → repo
-- File or path with extension → resource
-
-If the kind is deduced, jeru shows an interactive prompt so you can confirm or change it.
-
-### Removing entries
-
-```
-jeru remove <path> [--kind repo|knowledge|resource] [--project <name>]
-```
-
-Removes a repo, knowledge set, or resource from the manifest. Kind detection and the interactive confirmation prompt work the same way as `jeru add`.
+- **`info`** prints the full manifest; pass `--kind`/`-k` to show only repos,
+  knowledge sets, or resources.
+- **`create`** makes a new project directory under `~/project/<name>/` with a
+  starter `project.yml`. `--active` sets it current; `--force` allows a non-empty
+  existing directory.
+- **`edit`** without a filename opens the project folder in VSCode; with a
+  filename, opens it in `$EDITOR`. Filenames can be plain (relative to the project
+  dir) or a built-in alias: `@project` → `project.yml`, `@readme` → `README.md`,
+  `@roadmap` → `ROADMAP.md`. `jeru project edit --list-alias` prints the table.
+- **`add`** deduces the kind from the path when `--kind` is omitted (under
+  `~/knowledge/` → knowledge set; existing directory → repo; file/extension →
+  resource), with an interactive confirmation prompt. **`remove`** works the same
+  way.
 
 ### Sessions
 
 A **session** is a background activity: `claude remote-control` running in a
 detached tmux session, controlled from claude.ai/code or the Claude mobile app.
-`jeru session start` returns immediately (it does not take over your terminal),
+`jeru session up` returns immediately (it does not take over your terminal),
 prints the claude output (including the remote-control URL) and a VSCode URL, and
-the session keeps running until you `jeru session stop` it.
+the session keeps running until you `jeru session down` it.
 
 ```
-jeru session start [name] [--spawn same-dir|worktree|session] [--repos]
+jeru session up [name] [--spawn same-dir|worktree|session] [--repos]
 jeru session ls
-jeru session stop   [session-id]
-jeru session inspect [session-id]
+jeru session down   [session-id]
+jeru session attach [session-id]
 ```
 
 - A session's **id** is the project name (`myproj`) for a local session, or
-  `project@host` for a remote one. `stop`/`inspect` take that id (defaulting to
+  `project@host` for a remote one. `down`/`attach` take that id (defaulting to
   the current project), and `ls` prints it.
 - `--spawn` is forwarded to `claude remote-control --spawn` (default `same-dir`).
 - `--repos` opens claude in the first repo, with the other repos added.
-- `jeru session inspect` attaches to the session's tmux so you can watch claude;
+- `jeru session attach` attaches to the session's tmux so you can watch claude;
   detaching leaves the session running.
 - Obsidian: if MCP is enabled and its server isn't already up, jeru launches
   Obsidian normally and leaves it running (it is never stopped by jeru).
@@ -120,7 +96,7 @@ jeru session inspect [session-id]
 #### Remote sessions
 
 ```
-jeru session start [name] --remote <host> [options]
+jeru session up [name] --remote <host> [options]
 ```
 
 Runs the session on an SSH target (`user@hostname` or a `~/.ssh/config` alias).
@@ -139,7 +115,7 @@ Runs the session on an SSH target (`user@hostname` or a `~/.ssh/config` alias).
      (laptop sleep, network changes). When MCP is enabled, an `ssh -R` reverse
      tunnel exposes the local Obsidian server to the remote.
 
-`jeru session stop <id>` gracefully ends the remote claude, tears down both tmux
+`jeru session down <id>` gracefully ends the remote claude, tears down both tmux
 sessions, terminates mutagen, and removes the remote directories.
 
 **Options (only valid with `--remote`):**
@@ -153,17 +129,14 @@ sessions, terminates mutagen, and removes the remote directories.
 
 ### Compiling a project
 
-```
-jeru compile [name]
-```
-
-Regenerates all derived files from the manifest in one step:
+`jeru project compile [name]` regenerates all derived files from the manifest in
+one step:
 
 - `CLAUDE.md` — project briefing for Claude Code, listing all linked repos, knowledge sets, and resources
 - `.claude/settings.json` — sets `additionalDirectories` so Claude Code can read every linked folder
 - `<name>.code-workspace` — VSCode workspace with all repos as folders (skipped if the project has no repos)
 
-Run `jeru compile` whenever you change `project.yml`.
+Run it whenever you change `project.yml`.
 
 ### Claude Code integration
 
@@ -179,11 +152,11 @@ jeru claude repos [name] [-- args]     Open Claude in the first repo
 ├── project/
 │   ├── service-a/
 │   │   ├── project.yml
-│   │   ├── CLAUDE.md                  (generated by jeru compile)
+│   │   ├── CLAUDE.md                  (generated by jeru project compile)
 │   │   ├── ROADMAP.md                 (default roadmap location)
-│   │   ├── service-a.code-workspace   (generated by jeru compile)
+│   │   ├── service-a.code-workspace   (generated by jeru project compile)
 │   │   └── .claude/
-│   │       └── settings.json          (generated by jeru compile)
+│   │       └── settings.json          (generated by jeru project compile)
 │   └── …
 └── knowledge/
     ├── rust-async/
@@ -204,11 +177,11 @@ The three base directories can be overridden via environment variables (useful f
 
 | Tool | Required for |
 |---|---|
-| [`claude`](https://claude.ai/code) | All `claude` and `work` commands |
-| [`code`](https://code.visualstudio.com) | `compile` and `work` commands |
-| [VSCode Remote SSH extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) | `work --remote` |
-| [`mutagen`](https://mutagen.io) | `work --remote` |
-| [`tmux`](https://github.com/tmux/tmux) | `work --remote` |
+| [`claude`](https://claude.ai/code) | `jeru claude` and `jeru session` commands |
+| [`code`](https://code.visualstudio.com) | `jeru project compile` (and opening VSCode URLs) |
+| [`tmux`](https://github.com/tmux/tmux) | `jeru session` (local and remote) |
+| [`mutagen`](https://mutagen.io) | `jeru session … --remote` |
+| [VSCode Remote SSH extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) | opening the VSCode URL of a remote session |
 
 ## Shell completions
 

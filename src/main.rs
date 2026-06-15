@@ -13,6 +13,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage projects (list, select, create, compile, edit, entries…)
+    #[command(visible_alias = "p")]
+    Project {
+        #[command(subcommand)]
+        action: ProjectCommand,
+    },
+    /// Manage background work sessions (detached tmux running claude remote-control)
+    #[command(visible_alias = "s")]
+    Session {
+        #[command(subcommand)]
+        action: SessionCommand,
+    },
+    /// Claude Code integration
+    Claude {
+        #[command(subcommand)]
+        action: ClaudeCommand,
+    },
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Target shell
+        shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
     /// List projects under the project tree
     Ls,
     /// Set the current project for subsequent commands
@@ -20,12 +46,6 @@ enum Command {
     Use {
         /// Project name (directory under the project tree)
         name: String,
-    },
-    /// Manage background work sessions (detached tmux running claude remote-control)
-    #[command(visible_alias = "s")]
-    Session {
-        #[command(subcommand)]
-        action: SessionCommand,
     },
     /// Show a project's manifest (optionally only one kind of entry)
     #[command(visible_alias = "i")]
@@ -35,31 +55,6 @@ enum Command {
         /// Show only entries of this kind (repos, knowledge sets, or resources)
         #[arg(short, long, value_enum)]
         kind: Option<KindArg>,
-    },
-    /// Claude Code integration
-    Claude {
-        #[command(subcommand)]
-        action: ClaudeCommand,
-    },
-    /// Generate CLAUDE.md, .claude/settings.json, and the VSCode workspace
-    #[command(visible_alias = "c")]
-    Compile {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-    },
-    /// Print a shell completion script to stdout
-    Completions {
-        /// Target shell
-        shell: Shell,
-    },
-    /// Validate project manifests for common issues
-    #[command(visible_alias = "check")]
-    Validate {
-        /// Project name to validate; defaults to the current project
-        name: Option<String>,
-        /// Validate all projects
-        #[arg(long)]
-        all: bool,
     },
     /// Create a new project
     #[command(visible_alias = "new")]
@@ -75,6 +70,21 @@ enum Command {
         /// Create the project even if the directory already exists and is non-empty
         #[arg(long)]
         force: bool,
+    },
+    /// Generate CLAUDE.md, .claude/settings.json, and the VSCode workspace
+    #[command(visible_alias = "c")]
+    Compile {
+        /// Project name; defaults to the current project
+        name: Option<String>,
+    },
+    /// Validate project manifests for common issues
+    #[command(visible_alias = "check")]
+    Validate {
+        /// Project name to validate; defaults to the current project
+        name: Option<String>,
+        /// Validate all projects
+        #[arg(long)]
+        all: bool,
     },
     /// Open a project file in $EDITOR, or the project folder in VSCode
     #[command(visible_alias = "e")]
@@ -132,9 +142,8 @@ impl From<KindArg> for Kind {
 
 #[derive(Subcommand)]
 enum SessionCommand {
-    /// Start a background session for a project (locally or on a remote host)
-    #[command(visible_alias = "up")]
-    Start {
+    /// Bring up a background session for a project (locally or on a remote host)
+    Up {
         /// Project name; defaults to the current project
         name: Option<String>,
         /// SSH host to run the session on remotely (e.g. user@hostname)
@@ -158,9 +167,8 @@ enum SessionCommand {
     },
     /// List active sessions
     Ls,
-    /// Stop a session and clean up
-    #[command(visible_alias = "down")]
-    Stop {
+    /// Bring down a session and clean up
+    Down {
         /// Session id (project or project@host); defaults to the current project
         id: Option<String>,
     },
@@ -229,10 +237,8 @@ fn run(cli: Cli) -> jeru::Result<()> {
     let config = Config::load()?;
 
     match cli.command {
-        Command::Ls => run_ls(&config),
-        Command::Use { name } => run_use(&config, &name),
+        Command::Project { action } => run_project(&config, action),
         Command::Session { action } => run_session(&config, action),
-        Command::Info { name, kind } => run_info(&config, name, kind),
         Command::Claude { action } => match action {
             ClaudeCommand::Project { name, extra } => {
                 run_claude_open(&config, name, extra, Target::Project)
@@ -241,30 +247,38 @@ fn run(cli: Cli) -> jeru::Result<()> {
                 run_claude_open(&config, name, extra, Target::Repos)
             }
         },
-        Command::Compile { name } => run_compile(&config, name),
-        Command::Edit {
+        Command::Completions { .. } => unreachable!("handled before Config::load"),
+    }
+}
+
+fn run_project(config: &Config, action: ProjectCommand) -> jeru::Result<()> {
+    match action {
+        ProjectCommand::Ls => run_ls(config),
+        ProjectCommand::Use { name } => run_use(config, &name),
+        ProjectCommand::Info { name, kind } => run_info(config, name, kind),
+        ProjectCommand::Compile { name } => run_compile(config, name),
+        ProjectCommand::Edit {
             filename,
             project,
             list_alias,
-        } => run_edit(&config, filename, project, list_alias),
-        Command::Add {
+        } => run_edit(config, filename, project, list_alias),
+        ProjectCommand::Add {
             path,
             kind,
             project,
-        } => run_add(&config, project, path, kind),
-        Command::Remove {
+        } => run_add(config, project, path, kind),
+        ProjectCommand::Remove {
             path,
             kind,
             project,
-        } => run_remove(&config, project, path, kind),
-        Command::Validate { name, all } => run_validate(&config, name, all),
-        Command::Create {
+        } => run_remove(config, project, path, kind),
+        ProjectCommand::Validate { name, all } => run_validate(config, name, all),
+        ProjectCommand::Create {
             name,
             knowledge_location,
             active,
             force,
-        } => run_create(&config, &name, knowledge_location, active, force),
-        Command::Completions { .. } => unreachable!("handled before Config::load"),
+        } => run_create(config, &name, knowledge_location, active, force),
     }
 }
 
@@ -290,7 +304,7 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
     use jeru::session;
 
     match action {
-        SessionCommand::Start {
+        SessionCommand::Up {
             name,
             remote,
             spawn,
@@ -310,7 +324,7 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
             session::start(config, &project, remote.as_deref(), &opts)
         }
         SessionCommand::Ls => session::list(config),
-        SessionCommand::Stop { id } => {
+        SessionCommand::Down { id } => {
             let id = resolve_session_id(config, id)?;
             session::stop(config, &id)
         }
