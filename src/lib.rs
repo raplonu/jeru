@@ -16,7 +16,7 @@ pub mod template;
 pub mod validate;
 pub mod vscode;
 
-pub use add::{Kind, add_to_project, detect_kind, list_entries, remove_from_project};
+pub use add::{Kind, add_to_project, detect_kind, remove_from_project};
 pub use cache::{current_project, resolve_project, set_current_project};
 pub use config::Config;
 pub use error::{Error, Result};

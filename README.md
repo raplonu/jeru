@@ -36,10 +36,15 @@ Paths are stored as written (`~/…` or absolute). Knowledge set IDs are resolve
 ```
 jeru ls                    List all projects
 jeru use <name>            Set the current project (persisted across commands)
-jeru info [name]           Show the manifest for a project
+jeru info [name] [--kind repo|knowledge|resource]   Show the project manifest
 ```
 
+`jeru info` prints the full manifest; pass `--kind`/`-k` to show only repos,
+knowledge sets, or resources.
+
 Most commands accept an optional project name; when omitted they fall back to the current project set by `jeru use`.
+
+Most commands also have short aliases: `use`→`u`, `info`→`i`, `compile`→`c`, `edit`→`e`, `remove`→`rm`, `create`→`new`, `validate`→`check`, `session`→`s` (with `session start`→`up`, `session stop`→`down`).
 
 ### Creating a project
 
@@ -86,14 +91,6 @@ jeru remove <path> [--kind repo|knowledge|resource] [--project <name>]
 ```
 
 Removes a repo, knowledge set, or resource from the manifest. Kind detection and the interactive confirmation prompt work the same way as `jeru add`.
-
-### Listing entries
-
-```
-jeru list [<name>] [--kind repo|knowledge|resource]
-```
-
-Lists all repos, knowledge sets, and resources in a project. Pass `--kind` to filter by type.
 
 ### Sessions
 

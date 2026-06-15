@@ -16,19 +16,25 @@ enum Command {
     /// List projects under the project tree
     Ls,
     /// Set the current project for subsequent commands
+    #[command(visible_alias = "u")]
     Use {
         /// Project name (directory under the project tree)
         name: String,
     },
     /// Manage background work sessions (detached tmux running claude remote-control)
+    #[command(visible_alias = "s")]
     Session {
         #[command(subcommand)]
         action: SessionCommand,
     },
-    /// Show the manifest for a project
+    /// Show a project's manifest (optionally only one kind of entry)
+    #[command(visible_alias = "i")]
     Info {
         /// Project name; defaults to the current project
         name: Option<String>,
+        /// Show only entries of this kind (repos, knowledge sets, or resources)
+        #[arg(short, long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Claude Code integration
     Claude {
@@ -36,6 +42,7 @@ enum Command {
         action: ClaudeCommand,
     },
     /// Generate CLAUDE.md, .claude/settings.json, and the VSCode workspace
+    #[command(visible_alias = "c")]
     Compile {
         /// Project name; defaults to the current project
         name: Option<String>,
@@ -46,6 +53,7 @@ enum Command {
         shell: Shell,
     },
     /// Validate project manifests for common issues
+    #[command(visible_alias = "check")]
     Validate {
         /// Project name to validate; defaults to the current project
         name: Option<String>,
@@ -54,6 +62,7 @@ enum Command {
         all: bool,
     },
     /// Create a new project
+    #[command(visible_alias = "new")]
     Create {
         /// Project name (new directory under the project tree)
         name: String,
@@ -68,6 +77,7 @@ enum Command {
         force: bool,
     },
     /// Open a project file in $EDITOR, or the project folder in VSCode
+    #[command(visible_alias = "e")]
     Edit {
         /// File to open (relative to the project directory); omit to open VSCode
         filename: Option<String>,
@@ -90,6 +100,7 @@ enum Command {
         project: Option<String>,
     },
     /// Remove a repo, knowledge set, or resource from a project
+    #[command(visible_alias = "rm")]
     Remove {
         /// Path or knowledge set ID to remove
         path: String,
@@ -99,14 +110,6 @@ enum Command {
         /// Project name; defaults to the current project
         #[arg(short, long)]
         project: Option<String>,
-    },
-    /// List repos, knowledge sets, and resources in a project
-    List {
-        /// Project name; defaults to the current project
-        name: Option<String>,
-        /// Show only entries of this kind
-        #[arg(short, long, value_enum)]
-        kind: Option<KindArg>,
     },
 }
 
@@ -130,6 +133,7 @@ impl From<KindArg> for Kind {
 #[derive(Subcommand)]
 enum SessionCommand {
     /// Start a background session for a project (locally or on a remote host)
+    #[command(visible_alias = "up")]
     Start {
         /// Project name; defaults to the current project
         name: Option<String>,
@@ -155,12 +159,14 @@ enum SessionCommand {
     /// List active sessions
     Ls,
     /// Stop a session and clean up
+    #[command(visible_alias = "down")]
     Stop {
         /// Session id (project or project@host); defaults to the current project
         id: Option<String>,
     },
     /// Attach to a session's tmux to watch claude
-    Inspect {
+    #[command(alias = "inspect")]
+    Attach {
         /// Session id (project or project@host); defaults to the current project
         id: Option<String>,
     },
@@ -226,7 +232,7 @@ fn run(cli: Cli) -> jeru::Result<()> {
         Command::Ls => run_ls(&config),
         Command::Use { name } => run_use(&config, &name),
         Command::Session { action } => run_session(&config, action),
-        Command::Info { name } => run_info(&config, name),
+        Command::Info { name, kind } => run_info(&config, name, kind),
         Command::Claude { action } => match action {
             ClaudeCommand::Project { name, extra } => {
                 run_claude_open(&config, name, extra, Target::Project)
@@ -251,7 +257,6 @@ fn run(cli: Cli) -> jeru::Result<()> {
             kind,
             project,
         } => run_remove(&config, project, path, kind),
-        Command::List { name, kind } => run_list(&config, name, kind),
         Command::Validate { name, all } => run_validate(&config, name, all),
         Command::Create {
             name,
@@ -309,7 +314,7 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
             let id = resolve_session_id(config, id)?;
             session::stop(config, &id)
         }
-        SessionCommand::Inspect { id } => {
+        SessionCommand::Attach { id } => {
             let id = resolve_session_id(config, id)?;
             session::inspect(config, &id)
         }
@@ -325,10 +330,21 @@ fn resolve_session_id(config: &Config, id: Option<String>) -> jeru::Result<Strin
     }
 }
 
-fn run_info(config: &Config, name: Option<String>) -> jeru::Result<()> {
+fn run_info(config: &Config, name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
     let name = jeru::resolve_project(config, name)?;
     let manifest = jeru::load_manifest(config, &name)?;
-    print_manifest(&manifest);
+    match kind.map(Kind::from) {
+        None => print_manifest(&manifest),
+        Some(k) => {
+            let (title, items) = match k {
+                Kind::Repo => ("repos", &manifest.repos),
+                Kind::Knowledge => ("knowledge sets", &manifest.knowledge_sets),
+                Kind::Resource => ("resources", &manifest.resources),
+            };
+            print_section(title, items);
+            println!();
+        }
+    }
     Ok(())
 }
 
@@ -431,16 +447,6 @@ fn run_remove(
 
     jeru::remove_from_project(config, &name, &path, kind)?;
     println!("Removed {} '{}' from project {name}", kind.label(), path);
-    Ok(())
-}
-
-fn run_list(config: &Config, name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {
-    let name = jeru::resolve_project(config, name)?;
-    let kind = kind.map(Kind::from);
-    let entries = jeru::list_entries(config, &name, kind)?;
-    for (k, entry) in &entries {
-        println!("{}\t{}", k.label(), entry);
-    }
     Ok(())
 }
 

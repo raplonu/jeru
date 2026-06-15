@@ -123,33 +123,6 @@ pub fn remove_from_project(config: &Config, name: &str, path: &str, kind: Kind) 
     manifest.save_to_dir(&project_dir(config, name))
 }
 
-/// Return all entries in the project manifest, optionally filtered by kind.
-///
-/// Each element is `(kind, entry)` where `entry` is the stored string
-/// (path for repos and resources, ID for knowledge sets).
-pub fn list_entries(config: &Config, name: &str, kind: Option<Kind>) -> Result<Vec<(Kind, String)>> {
-    let manifest = load_manifest(config, name)?;
-    let mut out = Vec::new();
-
-    if matches!(kind, None | Some(Kind::Repo)) {
-        for r in &manifest.repos {
-            out.push((Kind::Repo, r.clone()));
-        }
-    }
-    if matches!(kind, None | Some(Kind::Knowledge)) {
-        for k in &manifest.knowledge_sets {
-            out.push((Kind::Knowledge, k.clone()));
-        }
-    }
-    if matches!(kind, None | Some(Kind::Resource)) {
-        for r in &manifest.resources {
-            out.push((Kind::Resource, r.clone()));
-        }
-    }
-
-    Ok(out)
-}
-
 /// Derive the knowledge set ID from a path.
 ///
 /// The path must be under the knowledge base directory; the ID is the relative
