@@ -6,13 +6,13 @@ use crate::error::{Error, Result};
 
 // ── VSCode remote ─────────────────────────────────────────────────────────────
 
-/// The `vscode-remote://` URI that opens `remote_path` on `host` over Remote SSH.
+/// The `vscode://vscode-remote/...` URI that opens `remote_path` on `host` over Remote SSH.
 ///
 /// Printed for the user to open (e.g. `code --folder-uri <uri>`) rather than
 /// launching VSCode directly. The `windowId=_blank` query tells VSCode to open
 /// the folder in a new window instead of reusing an existing one.
 pub fn vscode_remote_uri(host: &str, remote_path: &str) -> String {
-    format!("vscode-remote://ssh-remote+{host}{remote_path}?windowId=_blank")
+    format!("vscode://vscode-remote/ssh-remote+{host}{remote_path}?windowId=_blank")
 }
 
 // ── tmux session naming ────────────────────────────────────────────────────────
@@ -256,7 +256,7 @@ mod tests {
     fn vscode_remote_uri_format() {
         assert_eq!(
             vscode_remote_uri("user@host", "/home/u/p"),
-            "vscode-remote://ssh-remote+user@host/home/u/p?windowId=_blank"
+            "vscode://vscode-remote/ssh-remote+user@host/home/u/p?windowId=_blank"
         );
     }
 

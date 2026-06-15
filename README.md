@@ -118,6 +118,14 @@ Runs the session on an SSH target (`user@hostname` or a `~/.ssh/config` alias).
 `jeru session down <id>` gracefully ends the remote claude, tears down both tmux
 sessions, terminates mutagen, and removes the remote directories.
 
+If a remote sync directory is already non-empty, its contents are compared
+against the local directory. If the remote has nothing the local side doesn't
+(or only differs by local-only additions), the session proceeds normally. If
+the remote has extra or differing files, you're shown an interactive menu per
+folder to either override (wipe the remote copy, local wins), continue (let
+mutagen's two-way-resolved sync reconcile it), or abort — with shortcuts to
+apply a choice to all remaining folders at once.
+
 **Options (only valid with `--remote`):**
 
 | Flag | Effect |
@@ -125,7 +133,7 @@ sessions, terminates mutagen, and removes the remote directories.
 | `--repos` | Sync repos only; claude opens in the first repo |
 | `--no-resources` | Do not sync resources |
 | `--no-cleanup` | Keep the remote directories when the session is stopped |
-| `--override-remote` | Delete pre-existing non-empty remote directories at startup |
+| `--override-remote` | Skip the comparison and wipe ALL non-empty remote directories without prompting |
 
 ### Compiling a project
 

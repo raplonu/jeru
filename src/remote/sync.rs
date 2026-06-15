@@ -31,6 +31,27 @@ pub struct SyncPair {
     pub remote_path: String,
 }
 
+/// Result of comparing a local sync-pair directory against its remote
+/// counterpart, by relative file path and size.
+#[derive(Debug, Default, PartialEq)]
+pub struct DirDiff {
+    /// Files present locally but not on the remote.
+    pub local_only: Vec<String>,
+    /// Files present on the remote but not locally.
+    pub remote_only: Vec<String>,
+    /// Files present on both sides but with different sizes.
+    pub differing: Vec<String>,
+}
+
+impl DirDiff {
+    /// True if mutagen's two-way sync can proceed without risk of the remote
+    /// clobbering local state: the remote has nothing extra and nothing
+    /// differs (local-only additions are fine — they'll just sync up).
+    pub fn is_safe(&self) -> bool {
+        self.remote_only.is_empty() && self.differing.is_empty()
+    }
+}
+
 /// The full set of sync pairs for a remote work session.
 ///
 /// The project directory pair is always present and accessible by name,
@@ -190,6 +211,114 @@ pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>>
         .collect();
 
     Ok(nonempty)
+}
+
+/// Compare `pair.local` against its remote counterpart by listing all files
+/// (path relative to the sync root, plus size in bytes) on both sides and
+/// diffing them.
+///
+/// This is a *heuristic*: path+size equality does not guarantee identical
+/// content, but it's enough to surface obvious, surprising divergence before
+/// launching mutagen — true content conflicts that slip through are still
+/// caught by mutagen's `two-way-resolved` mode at sync time.
+///
+/// `.git` directories are excluded from both listings (large, and not
+/// actionable via this prompt). Symlinks are excluded too (`find -type f`
+/// only matches regular files) — a known, accepted gap. Requires GNU `find`
+/// (`-printf`), i.e. a Linux remote (and local) host.
+///
+/// If `pair.local` does not exist, it's treated as "local has nothing": any
+/// remote files become `remote_only`, correctly triggering a conflict prompt
+/// rather than a silent override.
+pub fn remote_compare(host: &str, pair: &SyncPair) -> Result<DirDiff> {
+    let local = list_files_local(&pair.local)?;
+    let remote = list_files_remote(host, &pair.remote_path)?;
+    Ok(diff_listings(&local, &remote))
+}
+
+/// `find <dir> -type f -not -path '*/.git/*' -printf '%P\t%s\n' | sort`,
+/// parsed into `(relative_path, size)` pairs. Returns an empty list if `dir`
+/// does not exist.
+fn list_files_local(dir: &Path) -> Result<Vec<(String, u64)>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let out = Command::new("find")
+        .args([
+            dir.to_str().unwrap_or_default(),
+            "-type",
+            "f",
+            "-not",
+            "-path",
+            "*/.git/*",
+            "-printf",
+            "%P\t%s\n",
+        ])
+        .output()?;
+    Ok(parse_file_listing(&out.stdout))
+}
+
+/// Same listing as [`list_files_local`], run on `host` over SSH against
+/// `remote_path`.
+fn list_files_remote(host: &str, remote_path: &str) -> Result<Vec<(String, u64)>> {
+    let cmd = format!(
+        "find {} -type f -not -path '*/.git/*' -printf '%P\\t%s\\n' | sort",
+        sq(remote_path)
+    );
+    let out = Command::new("ssh").args([host, &cmd]).output()?;
+    if !out.status.success() {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(parse_file_listing(&out.stdout))
+}
+
+/// Parse `path\tsize\n` lines (as produced by `find -printf '%P\t%s\n'`) into
+/// `(path, size)` pairs, sorted by path.
+fn parse_file_listing(output: &[u8]) -> Vec<(String, u64)> {
+    let mut listing: Vec<(String, u64)> = String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            let (path, size) = line.rsplit_once('\t')?;
+            Some((path.to_string(), size.parse().ok()?))
+        })
+        .collect();
+    listing.sort_by(|a, b| a.0.cmp(&b.0));
+    listing
+}
+
+/// Diff two `(relative_path, size)` listings, sorted by path with unique
+/// paths within each listing.
+///
+/// Paths present in both with matching sizes are dropped; mismatched sizes
+/// go to `differing`; paths present on only one side go to `local_only` /
+/// `remote_only`.
+fn diff_listings(local: &[(String, u64)], remote: &[(String, u64)]) -> DirDiff {
+    let mut diff = DirDiff::default();
+    let (mut i, mut j) = (0, 0);
+    while i < local.len() && j < remote.len() {
+        let (lpath, lsize) = &local[i];
+        let (rpath, rsize) = &remote[j];
+        match lpath.cmp(rpath) {
+            std::cmp::Ordering::Less => {
+                diff.local_only.push(lpath.clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                diff.remote_only.push(rpath.clone());
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                if lsize != rsize {
+                    diff.differing.push(lpath.clone());
+                }
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    diff.local_only.extend(local[i..].iter().map(|(p, _)| p.clone()));
+    diff.remote_only.extend(remote[j..].iter().map(|(p, _)| p.clone()));
+    diff
 }
 
 /// Remove all synced remote directories after a session ends.
@@ -523,6 +652,69 @@ mod tests {
             !locals.contains(&home.join("knowledge/docs")),
             "knowledge must be excluded: {locals:?}"
         );
+    }
+
+    #[test]
+    fn diff_listings_identical() {
+        let listing = vec![("a.txt".to_string(), 10), ("b.txt".to_string(), 20)];
+        let diff = diff_listings(&listing, &listing);
+        assert_eq!(diff, DirDiff::default());
+        assert!(diff.is_safe());
+    }
+
+    #[test]
+    fn diff_listings_local_only_is_safe() {
+        let local = vec![("a.txt".to_string(), 10), ("b.txt".to_string(), 20)];
+        let remote = vec![("a.txt".to_string(), 10)];
+        let diff = diff_listings(&local, &remote);
+        assert_eq!(diff.local_only, vec!["b.txt".to_string()]);
+        assert!(diff.remote_only.is_empty());
+        assert!(diff.differing.is_empty());
+        assert!(diff.is_safe());
+    }
+
+    #[test]
+    fn diff_listings_remote_only_is_unsafe() {
+        let local = vec![("a.txt".to_string(), 10)];
+        let remote = vec![("a.txt".to_string(), 10), ("b.txt".to_string(), 20)];
+        let diff = diff_listings(&local, &remote);
+        assert_eq!(diff.remote_only, vec!["b.txt".to_string()]);
+        assert!(!diff.is_safe());
+    }
+
+    #[test]
+    fn diff_listings_size_mismatch_is_unsafe() {
+        let local = vec![("a.txt".to_string(), 10)];
+        let remote = vec![("a.txt".to_string(), 99)];
+        let diff = diff_listings(&local, &remote);
+        assert_eq!(diff.differing, vec!["a.txt".to_string()]);
+        assert!(!diff.is_safe());
+    }
+
+    #[test]
+    fn diff_listings_empty_both() {
+        let diff = diff_listings(&[], &[]);
+        assert_eq!(diff, DirDiff::default());
+        assert!(diff.is_safe());
+    }
+
+    #[test]
+    fn diff_listings_mixed_categories() {
+        let local = vec![
+            ("a.txt".to_string(), 1),
+            ("b.txt".to_string(), 2),
+            ("d.txt".to_string(), 4),
+        ];
+        let remote = vec![
+            ("a.txt".to_string(), 1),
+            ("c.txt".to_string(), 3),
+            ("d.txt".to_string(), 99),
+        ];
+        let diff = diff_listings(&local, &remote);
+        assert_eq!(diff.local_only, vec!["b.txt".to_string()]);
+        assert_eq!(diff.remote_only, vec!["c.txt".to_string()]);
+        assert_eq!(diff.differing, vec!["d.txt".to_string()]);
+        assert!(!diff.is_safe());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Background work sessions: detached tmux running `claude remote-control`,
 //! locally or (resilient to ssh drops) on a remote host.
 
+mod conflicts;
 pub mod control;
 pub mod start;
 pub mod state;

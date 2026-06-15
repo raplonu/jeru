@@ -7,13 +7,15 @@ use crate::obsidian::{ensure_running, port_reachable};
 use crate::mcp::mcp_host_port;
 use crate::project::{init_claude_md, load_manifest};
 use crate::remote::{
-    McpTunnel, SyncOptions, build_sync_pairs, claude_local_cmd, remote_add_dirs,
-    remote_capture_pane, remote_check_empty, remote_cleanup, remote_home, remote_loop_script,
-    remote_loop_tmux_cmd, remote_mkdirs, remote_repos_dirs, remote_tmux_name,
-    remote_write_settings, tmux_capture_pane, tmux_has_session, tmux_name, tmux_new_detached,
-    tmux_new_window, vscode_remote_uri, mutagen_start, write_remote_loop_script,
+    DirDiff, McpTunnel, SyncOptions, SyncPairs, build_sync_pairs, claude_local_cmd,
+    remote_add_dirs, remote_capture_pane, remote_check_empty, remote_cleanup, remote_compare,
+    remote_home, remote_loop_script, remote_loop_tmux_cmd, remote_mkdirs, remote_repos_dirs,
+    remote_rm_dirs, remote_tmux_name, remote_write_settings, tmux_capture_pane, tmux_has_session,
+    tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri, mutagen_start,
+    write_remote_loop_script,
 };
 
+use super::conflicts::{self, Resolution};
 use super::state::{SessionState, now_epoch, session_id};
 
 /// Options controlling how a session is started.
@@ -133,22 +135,25 @@ fn start_remote(
         println!("Wrote {}", path.display());
     }
 
-    // Abort if any remote directory is already non-empty (stale files would be
-    // reconciled back into the local tree by mutagen's two-way sync).
+    // Check whether any remote directory is already non-empty: stale files
+    // could be reconciled back into the local tree by mutagen's two-way
+    // sync, so non-empty dirs are compared against local and, if they
+    // conflict, resolved interactively before proceeding.
     eprint!("Checking remote directories… ");
     let nonempty = remote_check_empty(host, pairs.all())?;
-    if !nonempty.is_empty() {
-        if opts.override_remote {
-            eprintln!("non-empty, overriding");
-            eprint!("Deleting remote directories… ");
-            remote_cleanup(host, pairs.all())?;
-            eprintln!("done");
-        } else {
-            eprintln!();
-            return Err(Error::RemoteNotEmpty(host.to_string(), nonempty.join(" ")));
-        }
-    } else {
+    if nonempty.is_empty() {
         eprintln!("clean");
+    } else if opts.override_remote {
+        eprintln!("non-empty, overriding");
+        eprint!("Deleting remote directories… ");
+        remote_cleanup(host, pairs.all())?;
+        eprintln!("done");
+    } else {
+        eprintln!("non-empty, comparing…");
+        if !resolve_remote_conflicts(host, &pairs, &nonempty)? {
+            println!("Aborted.");
+            return Ok(());
+        }
     }
 
     eprint!("Creating remote directories… ");
@@ -203,6 +208,44 @@ fn start_remote(
     state.save(config)?;
     report(&state, output.as_deref());
     Ok(())
+}
+
+/// For each sync pair flagged non-empty by `remote_check_empty`, compare local
+/// vs remote contents. Pairs that are "safe" ([`DirDiff::is_safe`]) proceed
+/// untouched. Pairs with conflicts go through the interactive resolver.
+///
+/// Returns `Ok(false)` if the user aborts (the caller should print "Aborted."
+/// and return early without starting mutagen); `Ok(true)` to proceed. Pairs
+/// resolved as "override" have their remote directory wiped via
+/// `remote_rm_dirs`; "continue" pairs are left as-is for mutagen to reconcile.
+fn resolve_remote_conflicts(host: &str, pairs: &SyncPairs, nonempty: &[String]) -> Result<bool> {
+    let mut conflicts: Vec<(String, DirDiff)> = Vec::new();
+    for pair in pairs.all() {
+        if !nonempty.contains(&pair.remote_path) {
+            continue;
+        }
+        let diff = remote_compare(host, pair)?;
+        if !diff.is_safe() {
+            conflicts.push((pair.remote_path.clone(), diff));
+        }
+    }
+
+    if conflicts.is_empty() {
+        eprintln!("no conflicts, proceeding");
+        return Ok(true);
+    }
+
+    match conflicts::resolve(&conflicts)? {
+        None => Ok(false),
+        Some(resolutions) => {
+            for ((remote_path, _), resolution) in conflicts.iter().zip(resolutions) {
+                if resolution == Resolution::Override {
+                    remote_rm_dirs(host, std::slice::from_ref(remote_path))?;
+                }
+            }
+            Ok(true)
+        }
+    }
 }
 
 /// Generate CLAUDE.md once; skip silently if it already exists.

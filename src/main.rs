@@ -161,7 +161,10 @@ enum SessionCommand {
         /// Skip removing remote directories when the session is stopped (remote only)
         #[arg(long, requires = "remote")]
         no_cleanup: bool,
-        /// Delete non-empty remote directories at startup instead of aborting (remote only)
+        /// Skip comparing remote directory contents and wipe ALL non-empty
+        /// remote sync directories without prompting (remote only). Without
+        /// this flag, non-empty remote directories are compared against
+        /// local and conflicts are resolved interactively.
         #[arg(long, requires = "remote")]
         override_remote: bool,
     },
