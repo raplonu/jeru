@@ -89,11 +89,11 @@ enum ProjectCommand {
     /// Open a project file in $EDITOR, or the project folder in VSCode
     #[command(visible_alias = "e")]
     Edit {
-        /// File to open (relative to the project directory); omit to open VSCode
-        filename: Option<String>,
         /// Project name; defaults to the current project
-        #[arg(short = 'p', long)]
         project: Option<String>,
+        /// File to open (relative to the project directory); omit to open VSCode
+        #[arg(short = 'f', long)]
+        filename: Option<String>,
         /// List accepted filename aliases
         #[arg(long)]
         list_alias: bool,
@@ -169,7 +169,7 @@ enum SessionCommand {
     Ls,
     /// Bring down a session and clean up
     Down {
-        /// Session id (project or project@host); defaults to the current project
+        /// Session id (project or project@host); omit to pick from a list
         id: Option<String>,
     },
     /// Attach to a session's tmux to watch claude
@@ -258,8 +258,8 @@ fn run_project(config: &Config, action: ProjectCommand) -> jeru::Result<()> {
         ProjectCommand::Info { name, kind } => run_info(config, name, kind),
         ProjectCommand::Compile { name } => run_compile(config, name),
         ProjectCommand::Edit {
-            filename,
             project,
+            filename,
             list_alias,
         } => run_edit(config, filename, project, list_alias),
         ProjectCommand::Add {
@@ -324,10 +324,16 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
             session::start(config, &project, remote.as_deref(), &opts)
         }
         SessionCommand::Ls => session::list(config),
-        SessionCommand::Down { id } => {
-            let id = resolve_session_id(config, id)?;
-            session::stop(config, &id)
-        }
+        SessionCommand::Down { id } => match id {
+            Some(id) => session::stop(config, &id),
+            None => match select_session_id(config)? {
+                Some(id) => session::stop(config, &id),
+                None => {
+                    println!("No active sessions.");
+                    Ok(())
+                }
+            },
+        },
         SessionCommand::Attach { id } => {
             let id = resolve_session_id(config, id)?;
             session::inspect(config, &id)
@@ -342,6 +348,35 @@ fn resolve_session_id(config: &Config, id: Option<String>) -> jeru::Result<Strin
         Some(id) => Ok(id),
         None => jeru::resolve_project(config, None),
     }
+}
+
+/// Prompt the user to pick an active session, returning its id (or `None` if
+/// there are no active sessions).
+fn select_session_id(config: &Config) -> jeru::Result<Option<String>> {
+    let sessions = jeru::SessionState::list(config)?;
+    if sessions.is_empty() {
+        return Ok(None);
+    }
+
+    let labels: Vec<String> = sessions
+        .iter()
+        .map(|s| {
+            let scope = match &s.remote {
+                Some(host) => format!("remote {host}"),
+                None => "local".to_string(),
+            };
+            format!("{}  [{scope}]", s.id)
+        })
+        .collect();
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Session to bring down")
+        .items(&labels)
+        .default(0)
+        .interact()
+        .map_err(std::io::Error::other)?;
+
+    Ok(Some(sessions[selection].id.clone()))
 }
 
 fn run_info(config: &Config, name: Option<String>, kind: Option<KindArg>) -> jeru::Result<()> {

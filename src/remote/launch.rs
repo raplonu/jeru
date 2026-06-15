@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use crate::constants::CLAUDE_BIN;
@@ -8,9 +9,10 @@ use crate::error::{Error, Result};
 /// The `vscode-remote://` URI that opens `remote_path` on `host` over Remote SSH.
 ///
 /// Printed for the user to open (e.g. `code --folder-uri <uri>`) rather than
-/// launching VSCode directly.
+/// launching VSCode directly. The `windowId=_blank` query tells VSCode to open
+/// the folder in a new window instead of reusing an existing one.
 pub fn vscode_remote_uri(host: &str, remote_path: &str) -> String {
-    format!("vscode-remote://ssh-remote+{host}{remote_path}")
+    format!("vscode-remote://ssh-remote+{host}{remote_path}?windowId=_blank")
 }
 
 // ── tmux session naming ────────────────────────────────────────────────────────
@@ -58,7 +60,7 @@ pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>) -> String {
     )
 }
 
-/// The shell command for a *remote* session's tmux window: a self-reconnecting
+/// The shell script for a *remote* session's tmux window: a self-reconnecting
 /// ssh that runs `claude remote-control` inside a tmux session **on the remote
 /// host**, so claude survives ssh disconnects.
 ///
@@ -66,7 +68,7 @@ pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>) -> String {
 /// connect and re-attaches to the still-running claude on every reconnect. The
 /// `-R` reverse tunnel (when `mcp` is set) is re-established each reconnect,
 /// keeping Obsidian MCP reachable.
-pub fn claude_remote_loop_cmd(
+pub fn remote_loop_script(
     host: &str,
     remote_tmux: &str,
     remote_project_path: &str,
@@ -90,7 +92,33 @@ pub fn claude_remote_loop_cmd(
     let ssh = format!("ssh -t {forward}{host} {}", sq(&inner));
     // Reconnect loop: if ssh drops (laptop sleep, network move), wait briefly and
     // re-attach to the remote tmux (claude is still running there).
-    format!("while true; do {ssh}; echo '[jeru] ssh disconnected; reconnecting…'; sleep 2; done")
+    format!(
+        "#!/bin/sh\nwhile true; do {ssh}; echo '[jeru] ssh disconnected; reconnecting…'; sleep 2; done\n"
+    )
+}
+
+/// Write `script` to `path` and make it executable.
+///
+/// tmux runs window commands via `$SHELL -c <command>`, which on this machine is
+/// fish. Fish's quoting rules diverge from POSIX `sh` for deeply-nested escaped
+/// strings (the reconnect loop nests ssh and remote-tmux quoting several levels
+/// deep), so passing the loop as an inline `sh -c '...'` string can fail to parse
+/// under fish and silently kill the window. Writing it to a script file sidesteps
+/// re-parsing entirely: the tmux window command only needs to name the file.
+pub fn write_remote_loop_script(path: &Path, script: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, script)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// The tmux window command that runs the reconnect-loop script at `path`.
+pub fn remote_loop_tmux_cmd(path: &Path) -> String {
+    format!("sh {}", sq(&path.to_string_lossy()))
 }
 
 // ── tmux control ───────────────────────────────────────────────────────────────
@@ -116,10 +144,14 @@ pub fn tmux_new_window(session: &str, window: &str, cmd: &str) -> Result<()> {
     tmux_status(&["new-window", "-t", session, "-n", window, cmd])
 }
 
-/// Whether a tmux session with the given name exists.
+/// Whether a tmux session with exactly the given name exists.
+///
+/// The `=` prefix forces an exact match; without it, tmux treats `-t` as a
+/// prefix pattern and `has-session -t jeru` would report success for an
+/// unrelated session like `jeru-menhix-tonix`.
 pub fn tmux_has_session(session: &str) -> bool {
     Command::new("tmux")
-        .args(["has-session", "-t", session])
+        .args(["has-session", "-t", &format!("={session}")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -224,7 +256,7 @@ mod tests {
     fn vscode_remote_uri_format() {
         assert_eq!(
             vscode_remote_uri("user@host", "/home/u/p"),
-            "vscode-remote://ssh-remote+user@host/home/u/p"
+            "vscode-remote://ssh-remote+user@host/home/u/p?windowId=_blank"
         );
     }
 
@@ -245,16 +277,42 @@ mod tests {
 
     #[test]
     fn remote_loop_wraps_remote_tmux_and_reconnects() {
-        let cmd = claude_remote_loop_cmd("myhost", "jeru-proj", "/remote/proj", "session", None);
+        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None);
+        // Script is meant to be run via `sh`.
+        assert!(script.starts_with("#!/bin/sh\n"), "script: {script}");
         // Runs claude inside a remote tmux session via new-session -A.
-        assert!(cmd.contains("tmux new-session -A -s"), "cmd: {cmd}");
-        assert!(cmd.contains("jeru-proj"), "cmd: {cmd}");
-        assert!(cmd.contains("remote-control --spawn session"), "cmd: {cmd}");
+        assert!(script.contains("tmux new-session -A -s"), "script: {script}");
+        assert!(script.contains("jeru-proj"), "script: {script}");
+        assert!(script.contains("remote-control --spawn session"), "script: {script}");
         // Self-reconnecting loop.
-        assert!(cmd.contains("while true"), "cmd: {cmd}");
+        assert!(script.contains("while true"), "script: {script}");
         // No tunnel when mcp is None.
-        assert!(!cmd.contains("-R "), "cmd: {cmd}");
-        assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
+        assert!(!script.contains("-R "), "script: {script}");
+        assert!(!script.contains("OBSIDIAN_API_KEY"), "script: {script}");
+    }
+
+    #[test]
+    fn write_remote_loop_script_creates_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("remote-loop.sh");
+        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None);
+        write_remote_loop_script(&path, &script).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, script);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "script should be executable");
+    }
+
+    #[test]
+    fn remote_loop_tmux_cmd_quotes_path() {
+        let cmd = remote_loop_tmux_cmd(Path::new("/home/u/it's a dir/script.sh"));
+        assert!(cmd.starts_with("sh "), "cmd: {cmd}");
+        // A single level of quoting parses fine under both sh and fish, unlike
+        // the deeply-nested `sh -c '...'` string this replaced.
+        assert!(sh_parses(&cmd), "not valid shell: {cmd}");
     }
 
     /// Whether `cmd` is syntactically valid POSIX shell (parsed, not executed).
@@ -282,14 +340,14 @@ mod tests {
             port: 27123,
             token: Some("to'ken".to_string()),
         };
-        let cmd = claude_remote_loop_cmd(
+        let script = remote_loop_script(
             "user@host",
             "jeru-proj",
             "/home/u/it's a dir",
             "worktree",
             Some(&tunnel),
         );
-        assert!(sh_parses(&cmd), "not valid shell: {cmd}");
+        assert!(sh_parses(&script), "not valid shell: {script}");
     }
 
     #[test]
@@ -299,16 +357,16 @@ mod tests {
             port: 27123,
             token: Some("secret-token".to_string()),
         };
-        let cmd =
-            claude_remote_loop_cmd("myhost", "jeru-proj", "/remote/proj", "same-dir", Some(&tunnel));
-        assert!(cmd.contains("-R 27123:127.0.0.1:27123"), "cmd: {cmd}");
+        let script =
+            remote_loop_script("myhost", "jeru-proj", "/remote/proj", "same-dir", Some(&tunnel));
+        assert!(script.contains("-R 27123:127.0.0.1:27123"), "script: {script}");
         assert!(
-            cmd.find("-R ").unwrap() < cmd.find("myhost").unwrap(),
-            "forward must precede host: {cmd}"
+            script.find("-R ").unwrap() < script.find("myhost").unwrap(),
+            "forward must precede host: {script}"
         );
-        let env_pos = cmd.find("OBSIDIAN_API_KEY=").expect("token env present");
-        let claude_pos = cmd.find("remote-control").unwrap();
-        assert!(env_pos < claude_pos, "token must precede claude: {cmd}");
-        assert!(cmd.contains("secret-token"), "cmd: {cmd}");
+        let env_pos = script.find("OBSIDIAN_API_KEY=").expect("token env present");
+        let claude_pos = script.find("remote-control").unwrap();
+        assert!(env_pos < claude_pos, "token must precede claude: {script}");
+        assert!(script.contains("secret-token"), "script: {script}");
     }
 }

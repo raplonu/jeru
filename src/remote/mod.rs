@@ -2,9 +2,10 @@ pub mod launch;
 pub mod sync;
 
 pub use launch::{
-    McpTunnel, claude_local_cmd, claude_remote_loop_cmd, remote_capture_pane, remote_kill_tmux,
-    remote_tmux_name, tmux_attach, tmux_capture_pane, tmux_has_session, tmux_kill_session,
-    tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri,
+    McpTunnel, claude_local_cmd, remote_capture_pane, remote_kill_tmux, remote_loop_script,
+    remote_loop_tmux_cmd, remote_tmux_name, tmux_attach, tmux_capture_pane, tmux_has_session,
+    tmux_kill_session, tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri,
+    write_remote_loop_script,
 };
 pub use sync::{
     SyncOptions, SyncPair, SyncPairs, build_sync_pairs, mutagen_start, mutagen_stop,

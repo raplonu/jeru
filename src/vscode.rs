@@ -56,9 +56,21 @@ pub fn code_folder(dir: &Path) -> Command {
     cmd
 }
 
+/// Wrap `url` in an OSC 8 terminal hyperlink escape sequence.
+///
+/// Custom URI schemes like `vscode://` or `vscode-remote://` are often not
+/// recognised by a terminal's own URL-detection heuristics, leaving them
+/// unclickable (or only partially clickable). OSC 8 explicitly marks the link
+/// boundaries, so terminals that support it (most modern ones) make the whole
+/// string clickable regardless of scheme.
+pub fn osc8_link(url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
+}
+
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
 }
+

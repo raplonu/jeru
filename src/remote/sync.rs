@@ -83,11 +83,17 @@ pub(super) fn to_remote(local: &Path, local_home: &Path, remote_home: &str) -> R
 
 // ── session naming ────────────────────────────────────────────────────────────
 
+/// Build a mutagen session name from `project` and `local`.
+///
+/// Mutagen session names only allow alphanumerics and `-`, so any other
+/// character (path separators, underscores, dots…) is replaced with `-`.
 fn session_name(project: &str, local: &Path) -> String {
     let home = dirs::home_dir().unwrap_or_default();
     let rel = local.strip_prefix(&home).unwrap_or(local);
-    let slug = rel.to_string_lossy().replace('/', "-");
-    format!("jeru-{project}-{slug}")
+    let raw = format!("jeru-{project}-{}", rel.to_string_lossy());
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect()
 }
 
 // ── sync pairs ────────────────────────────────────────────────────────────────
@@ -446,6 +452,18 @@ mod tests {
         let a = session_name("proj", std::path::Path::new("/home/user/code/repo-a"));
         let b = session_name("proj", std::path::Path::new("/home/user/code/repo-b"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn session_name_sanitises_invalid_characters() {
+        let name = session_name(
+            "mavis",
+            std::path::Path::new("/home/user/rtctk-doc/sphinx_doc/_build/markdown"),
+        );
+        assert!(
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "unexpected character in {name}"
+        );
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub fn stop(config: &Config, query: &str) -> Result<()> {
         }
         // Kill the local tmux session (stops the reconnect loop + sync monitor).
         tmux_kill_session(&state.tmux)?;
+        // Remove the reconnect-loop script written at session start.
+        let script_path = SessionState::dir(config).join(format!("{}-remote-loop.sh", state.tmux));
+        let _ = std::fs::remove_file(script_path);
         // Terminate mutagen sessions.
         if !state.mutagen_sessions.is_empty() {
             eprint!("Stopping mutagen sessions… ");
@@ -66,7 +69,7 @@ pub fn list(config: &Config) -> Result<()> {
             spawn = s.spawn,
             age = human_age(s.started_at),
         );
-        println!("    VSCode: {}", s.vscode_url);
+        println!("    VSCode: {}", crate::vscode::osc8_link(&s.vscode_url));
     }
     Ok(())
 }

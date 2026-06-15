@@ -7,11 +7,11 @@ use crate::obsidian::{ensure_running, port_reachable};
 use crate::mcp::mcp_host_port;
 use crate::project::{init_claude_md, load_manifest};
 use crate::remote::{
-    McpTunnel, SyncOptions, build_sync_pairs, claude_local_cmd, claude_remote_loop_cmd,
-    remote_add_dirs, remote_capture_pane, remote_check_empty, remote_cleanup, remote_home,
-    remote_mkdirs, remote_repos_dirs, remote_tmux_name, remote_write_settings, tmux_capture_pane,
-    tmux_has_session, tmux_name, tmux_new_detached, tmux_new_window, vscode_remote_uri,
-    mutagen_start,
+    McpTunnel, SyncOptions, build_sync_pairs, claude_local_cmd, remote_add_dirs,
+    remote_capture_pane, remote_check_empty, remote_cleanup, remote_home, remote_loop_script,
+    remote_loop_tmux_cmd, remote_mkdirs, remote_repos_dirs, remote_tmux_name,
+    remote_write_settings, tmux_capture_pane, tmux_has_session, tmux_name, tmux_new_detached,
+    tmux_new_window, vscode_remote_uri, mutagen_start, write_remote_loop_script,
 };
 
 use super::state::{SessionState, now_epoch, session_id};
@@ -66,7 +66,16 @@ fn start_local(
     println!("Launching session '{id}' in tmux…");
     tmux_new_detached(tmux, "claude", &cmd)?;
 
-    let vscode_url = format!("vscode://file{cwd}");
+    // Prefer opening the generated `.code-workspace` (lists all repos) over
+    // the bare project folder; fall back when the project has no repos.
+    let target = match crate::vscode::write_workspace(config, project) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(Error::NoRepos(_)) => cwd.clone(),
+        Err(e) => return Err(e),
+    };
+    // `windowId=_blank` tells VSCode to open the folder in a new window
+    // instead of reusing an existing one.
+    let vscode_url = format!("vscode://file{target}?windowId=_blank");
     let output = poll_capture(|| tmux_capture_pane(&format!("{tmux}:claude")));
 
     let state = SessionState {
@@ -161,8 +170,10 @@ fn start_remote(
 
     let tunnel = build_mcp_tunnel(config);
     let remote_tmux = remote_tmux_name(project);
-    let claude_cmd =
-        claude_remote_loop_cmd(host, &remote_tmux, &remote_cwd, &opts.spawn, tunnel.as_ref());
+    let script = remote_loop_script(host, &remote_tmux, &remote_cwd, &opts.spawn, tunnel.as_ref());
+    let script_path = SessionState::dir(config).join(format!("{tmux}-remote-loop.sh"));
+    write_remote_loop_script(&script_path, &script)?;
+    let claude_cmd = remote_loop_tmux_cmd(&script_path);
 
     // Detached local tmux: a `sync` window monitoring mutagen and a `claude`
     // window holding the self-reconnecting ssh into the remote tmux.
@@ -209,7 +220,7 @@ fn init_claude(config: &Config, project: &str) -> Result<()> {
 /// Print the session URLs and captured claude output.
 fn report(state: &SessionState, output: Option<&str>) {
     println!("\nSession '{}' started.", state.id);
-    println!("  VSCode:  {}", state.vscode_url);
+    println!("  VSCode:  {}", crate::vscode::osc8_link(&state.vscode_url));
     match output {
         Some(text) if !text.trim().is_empty() => {
             println!("  Claude:\n{}", indent(text.trim_end()));

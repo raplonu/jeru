@@ -44,7 +44,7 @@ jeru project info [name] [--kind repo|knowledge|resource]   Show the manifest
 jeru project create <name> [--active] [--force]
 jeru project compile [name]             Regenerate derived files
 jeru project validate [name] [--all]    Check manifests for issues
-jeru project edit [<filename>] [-p <name>] [--list-alias]
+jeru project edit [<name>] [-f <filename>] [--list-alias]
 jeru project add <path> [--kind repo|knowledge|resource] [-p <name>]
 jeru project remove <path> [--kind repo|knowledge|resource] [-p <name>]
 ```
