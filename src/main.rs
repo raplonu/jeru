@@ -1,5 +1,6 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use dialoguer::{Select, theme::ColorfulTheme};
 
 use jeru::{Config, Kind, Manifest};
@@ -45,12 +46,14 @@ enum ProjectCommand {
     #[command(visible_alias = "u")]
     Use {
         /// Project name (directory under the project tree)
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: String,
     },
     /// Show a project's manifest (optionally only one kind of entry)
     #[command(visible_alias = "i")]
     Info {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
         /// Show only entries of this kind (repos, knowledge sets, or resources)
         #[arg(short, long, value_enum)]
@@ -75,12 +78,14 @@ enum ProjectCommand {
     #[command(visible_alias = "c")]
     Compile {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
     },
     /// Validate project manifests for common issues
     #[command(visible_alias = "check")]
     Validate {
         /// Project name to validate; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
         /// Validate all projects
         #[arg(long)]
@@ -90,6 +95,7 @@ enum ProjectCommand {
     #[command(visible_alias = "e")]
     Edit {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         project: Option<String>,
         /// File to open (relative to the project directory); omit to open VSCode
         #[arg(short = 'f', long)]
@@ -106,7 +112,7 @@ enum ProjectCommand {
         #[arg(short, long, value_enum)]
         kind: Option<KindArg>,
         /// Project name; defaults to the current project
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(project_names))]
         project: Option<String>,
     },
     /// Remove a repo, knowledge set, or resource from a project
@@ -118,7 +124,7 @@ enum ProjectCommand {
         #[arg(short, long, value_enum)]
         kind: Option<KindArg>,
         /// Project name; defaults to the current project
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(project_names))]
         project: Option<String>,
     },
 }
@@ -145,6 +151,7 @@ enum SessionCommand {
     /// Bring up a background session for a project (locally or on a remote host)
     Up {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
         /// SSH host to run the session on remotely (e.g. user@hostname)
         #[arg(long)]
@@ -173,7 +180,7 @@ enum SessionCommand {
     /// Bring down a session and clean up
     Down {
         /// Session id (project or project@host); omit to pick from a list
-        #[arg(conflicts_with = "all")]
+        #[arg(conflicts_with = "all", add = ArgValueCompleter::new(session_ids))]
         id: Option<String>,
         /// Stop all active sessions
         #[arg(long)]
@@ -182,7 +189,7 @@ enum SessionCommand {
     /// Show session details (VSCode URL, Claude output, status)
     Info {
         /// Session id (project or project@host); omit to pick from a list
-        #[arg(conflicts_with = "all")]
+        #[arg(conflicts_with = "all", add = ArgValueCompleter::new(session_ids))]
         id: Option<String>,
         /// Show info for all active sessions
         #[arg(long)]
@@ -192,6 +199,7 @@ enum SessionCommand {
     #[command(alias = "inspect")]
     Attach {
         /// Session id (project or project@host); defaults to the current project
+        #[arg(add = ArgValueCompleter::new(session_ids))]
         id: Option<String>,
     },
 }
@@ -218,6 +226,7 @@ enum ClaudeCommand {
     /// Open Claude Code in the project directory, with all linked folders
     Project {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
         /// Arguments after `--` are forwarded to claude
         #[arg(last = true)]
@@ -226,6 +235,7 @@ enum ClaudeCommand {
     /// Open Claude Code in the project's first repo, with the rest added
     Repos {
         /// Project name; defaults to the current project
+        #[arg(add = ArgValueCompleter::new(project_names))]
         name: Option<String>,
         /// Arguments after `--` are forwarded to claude
         #[arg(last = true)]
@@ -233,11 +243,57 @@ enum ClaudeCommand {
     },
 }
 
+fn project_names(_current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let Ok(config) = jeru::Config::load() else {
+        return vec![];
+    };
+    let Ok(projects) = jeru::list_projects(&config) else {
+        return vec![];
+    };
+    projects
+        .into_iter()
+        .map(|p| CompletionCandidate::new(p.name))
+        .collect()
+}
+
+fn session_ids(_current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let Ok(config) = jeru::Config::load() else {
+        return vec![];
+    };
+    let Ok(sessions) = jeru::SessionState::list(&config) else {
+        return vec![];
+    };
+    sessions
+        .into_iter()
+        .map(|s| CompletionCandidate::new(s.id))
+        .collect()
+}
+
 fn main() {
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
 
     // Completions doesn't need Config.
     if let Command::Completions { shell } = cli.command {
+        // Output the dynamic shell integration so the shell calls this binary
+        // at completion time — that's what enables project name / session ID
+        // completions alongside the standard subcommand and flag completions.
+        let shell_str: Option<&str> = match shell {
+            Shell::Bash => Some("bash"),
+            Shell::Elvish => Some("elvish"),
+            Shell::Fish => Some("fish"),
+            Shell::PowerShell => Some("powershell"),
+            Shell::Zsh => Some("zsh"),
+            _ => None,
+        };
+        if let Some(name) = shell_str {
+            // SAFETY: single-threaded at this point; no other thread reads env.
+            unsafe { std::env::set_var("COMPLETE", name) };
+            clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+            // complete() exits; the generate() below is only reached for
+            // shells CompleteEnv doesn't recognise.
+        }
         generate(shell, &mut Cli::command(), "jeru", &mut std::io::stdout());
         return;
     }
