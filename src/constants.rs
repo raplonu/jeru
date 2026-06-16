@@ -46,6 +46,10 @@ pub const README_FILE: &str = "README.md";
 
 // External binaries
 pub const CLAUDE_BIN: &str = "claude";
+
+// Claude workspace trust error (emitted by `claude remote-control` when the
+// project directory has never been opened interactively).
+pub const WORKSPACE_TRUST_ERROR: &str = "Workspace not trusted";
 pub const CODE_BIN: &str = "code";
 
 // Prefix for JERU_* env var overrides (e.g. JERU_PROJECTS_DIR)

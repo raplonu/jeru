@@ -79,8 +79,12 @@ pub fn remote_loop_script(
         Some(token) => format!("OBSIDIAN_API_KEY={} ", sq(token)),
         None => String::new(),
     };
+    // `; exec sh`: if claude exits immediately (e.g. the workspace-trust error),
+    // keep the remote tmux session alive with a fallback shell so its output stays
+    // readable over `remote_capture_pane` — otherwise the session dies, ssh drops,
+    // and the loop respawns claude forever, erasing the error before it's seen.
     let claude = format!(
-        "cd {rp} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}",
+        "cd {rp} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}; exec sh",
         rp = sq(remote_project_path)
     );
     let inner = format!("tmux new-session -A -s {} {}", sq(remote_tmux), sq(&claude));
@@ -193,6 +197,15 @@ pub fn tmux_attach(session: &str) -> Result<()> {
     tmux_status(&[attach_cmd, "-t", session])
 }
 
+/// Kill `target`'s current pane and (re)run `cmd` in it, resetting the screen.
+///
+/// Used to relaunch claude after the user accepts workspace trust: the window is
+/// kept alive by a fallback shell (see the `; exec sh` wrapper in `start_local`),
+/// and respawning gives a clean pane so stale error output isn't recaptured.
+pub fn tmux_respawn_window(target: &str, cmd: &str) -> Result<()> {
+    tmux_status(&["respawn-window", "-k", "-t", target, cmd])
+}
+
 fn tmux_status(args: &[&str]) -> Result<()> {
     let ok = Command::new("tmux").args(args).status()?.success();
     if !ok {
@@ -230,7 +243,7 @@ pub fn remote_kill_tmux(host: &str, remote_tmux: &str) -> Result<()> {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Single-quote a shell argument, escaping any single quotes inside.
-fn sq(s: &str) -> String {
+pub(crate) fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
@@ -284,6 +297,8 @@ mod tests {
         assert!(script.contains("tmux new-session -A -s"), "script: {script}");
         assert!(script.contains("jeru-proj"), "script: {script}");
         assert!(script.contains("remote-control --spawn session"), "script: {script}");
+        // Fallback shell keeps the remote session alive if claude exits (trust error).
+        assert!(script.contains("; exec sh"), "script: {script}");
         // Self-reconnecting loop.
         assert!(script.contains("while true"), "script: {script}");
         // No tunnel when mcp is None.
