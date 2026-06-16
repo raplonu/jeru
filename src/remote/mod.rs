@@ -11,7 +11,7 @@ pub(crate) use launch::sq;
 pub use sync::{
     DirDiff, SyncOptions, SyncPair, SyncPairs, build_sync_pairs, mutagen_start, mutagen_stop,
     mutagen_terminate, remote_add_dirs, remote_check_empty, remote_cleanup, remote_compare,
-    remote_home, remote_mkdirs, remote_repos_dirs, remote_rm_dirs, remote_write_file,
-    remote_write_settings,
+    remote_home, remote_mkdirs, remote_repos_dirs, remote_rm_dirs, remote_rsync_preview,
+    remote_write_file, remote_write_settings,
 };
 pub(crate) use sync::to_remote;

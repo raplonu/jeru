@@ -236,7 +236,15 @@ fn start_remote(
         tmux: tmux.to_string(),
         remote_tmux: Some(remote_tmux),
         mutagen_sessions: pairs.all().iter().map(|p| p.session.clone()).collect(),
-        remote_dirs: pairs.all().iter().map(|p| p.remote_path.clone()).collect(),
+        // Repos are intentionally omitted: they're left on the remote and
+        // reconciled by the conflict manager on the next `session up` rather
+        // than wiped on `session down` (see `SyncPair::is_repo`).
+        remote_dirs: pairs
+            .all()
+            .iter()
+            .filter(|p| !p.is_repo)
+            .map(|p| p.remote_path.clone())
+            .collect(),
         no_cleanup: opts.no_cleanup,
         vscode_url,
         claude_output: output.clone(),
@@ -256,14 +264,14 @@ fn start_remote(
 /// resolved as "override" have their remote directory wiped via
 /// `remote_rm_dirs`; "continue" pairs are left as-is for mutagen to reconcile.
 fn resolve_remote_conflicts(host: &str, pairs: &SyncPairs, nonempty: &[String]) -> Result<bool> {
-    let mut conflicts: Vec<(String, DirDiff)> = Vec::new();
+    let mut conflicts: Vec<(String, std::path::PathBuf, DirDiff)> = Vec::new();
     for pair in pairs.all() {
         if !nonempty.contains(&pair.remote_path) {
             continue;
         }
         let diff = remote_compare(host, pair)?;
         if !diff.is_safe() {
-            conflicts.push((pair.remote_path.clone(), diff));
+            conflicts.push((pair.remote_path.clone(), pair.local.clone(), diff));
         }
     }
 
@@ -272,10 +280,10 @@ fn resolve_remote_conflicts(host: &str, pairs: &SyncPairs, nonempty: &[String]) 
         return Ok(true);
     }
 
-    match conflicts::resolve(&conflicts)? {
+    match conflicts::resolve(host, &conflicts)? {
         None => Ok(false),
         Some(resolutions) => {
-            for ((remote_path, _), resolution) in conflicts.iter().zip(resolutions) {
+            for ((remote_path, _, _), resolution) in conflicts.iter().zip(resolutions) {
                 if resolution == Resolution::Override {
                     remote_rm_dirs(host, std::slice::from_ref(remote_path))?;
                 }

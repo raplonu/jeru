@@ -6,10 +6,12 @@
 //! copy), continue (let mutagen's two-way-resolved sync reconcile it), or
 //! abort the whole `session up`.
 
+use std::path::{Path, PathBuf};
+
 use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::error::Result;
-use crate::remote::DirDiff;
+use crate::remote::{DirDiff, remote_rsync_preview};
 
 /// How to handle one conflicting remote directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,15 +32,19 @@ enum SubmenuOutcome {
 
 /// Interactively resolve a set of conflicting sync-pair directories.
 ///
-/// `conflicts` is `(remote_path, DirDiff)` for each folder with issues.
-/// Returns `Some(resolutions)` (one per input, same order) once every folder
-/// has been resolved to [`Resolution::Override`] or [`Resolution::Continue`],
-/// or `None` if the user chooses to abort.
-pub(crate) fn resolve(conflicts: &[(String, DirDiff)]) -> Result<Option<Vec<Resolution>>> {
+/// `conflicts` is `(remote_path, local_path, DirDiff)` for each folder with
+/// issues; `host` is the SSH host used to render diffs. Returns
+/// `Some(resolutions)` (one per input, same order) once every folder has been
+/// resolved to [`Resolution::Override`] or [`Resolution::Continue`], or `None`
+/// if the user chooses to abort.
+pub(crate) fn resolve(
+    host: &str,
+    conflicts: &[(String, PathBuf, DirDiff)],
+) -> Result<Option<Vec<Resolution>>> {
     let mut pending: Vec<Option<Resolution>> = vec![None; conflicts.len()];
 
     println!("\nThe following remote directories have unresolved differences:");
-    for (path, diff) in conflicts {
+    for (path, _, diff) in conflicts {
         println!(
             "  - {path}  ({} only on remote, {} differing)",
             diff.remote_only.len(),
@@ -55,7 +61,7 @@ pub(crate) fn resolve(conflicts: &[(String, DirDiff)]) -> Result<Option<Vec<Reso
         let mut items: Vec<String> = conflicts
             .iter()
             .zip(&pending)
-            .map(|((path, _), res)| {
+            .map(|((path, _, _), res)| {
                 let tag = match res {
                     Some(Resolution::Override) => "[override]",
                     Some(Resolution::Continue) => "[continue]",
@@ -77,7 +83,8 @@ pub(crate) fn resolve(conflicts: &[(String, DirDiff)]) -> Result<Option<Vec<Reso
 
         let n = conflicts.len();
         if selection < n {
-            match resolve_one(&conflicts[selection].0, &conflicts[selection].1)? {
+            let (remote_path, local, _) = &conflicts[selection];
+            match resolve_one(host, local, remote_path)? {
                 SubmenuOutcome::Resolved(r) => pending[selection] = Some(r),
                 SubmenuOutcome::Back => {}
                 SubmenuOutcome::Abort => return Ok(None),
@@ -98,10 +105,10 @@ pub(crate) fn resolve(conflicts: &[(String, DirDiff)]) -> Result<Option<Vec<Reso
 
 /// Submenu for a single conflicting folder. Returns `SubmenuOutcome::Back` to
 /// return to the top-level menu without resolving it.
-fn resolve_one(remote_path: &str, diff: &DirDiff) -> Result<SubmenuOutcome> {
+fn resolve_one(host: &str, local: &Path, remote_path: &str) -> Result<SubmenuOutcome> {
     loop {
         let items = [
-            "View conflicting files",
+            "View diff (rsync dry-run)",
             "Override (wipe remote, local wins)",
             "Continue (let mutagen resolve)",
             "Back",
@@ -115,7 +122,7 @@ fn resolve_one(remote_path: &str, diff: &DirDiff) -> Result<SubmenuOutcome> {
             .map_err(std::io::Error::other)?;
 
         match selection {
-            0 => print_diff(diff),
+            0 => view_diff(host, local, remote_path),
             1 => return Ok(SubmenuOutcome::Resolved(Resolution::Override)),
             2 => return Ok(SubmenuOutcome::Resolved(Resolution::Continue)),
             3 => return Ok(SubmenuOutcome::Back),
@@ -124,30 +131,13 @@ fn resolve_one(remote_path: &str, diff: &DirDiff) -> Result<SubmenuOutcome> {
     }
 }
 
-/// Print the files responsible for a folder's conflict status.
-///
-/// `local_only` is intentionally not shown: folders whose only difference is
-/// local-only files are "safe" and never reach this menu.
-fn print_diff(diff: &DirDiff) {
-    const MAX_SHOWN: usize = 20;
-
-    if !diff.remote_only.is_empty() {
-        println!("  Only on remote ({}):", diff.remote_only.len());
-        for f in diff.remote_only.iter().take(MAX_SHOWN) {
-            println!("    {f}");
-        }
-        if diff.remote_only.len() > MAX_SHOWN {
-            println!("    ... and {} more", diff.remote_only.len() - MAX_SHOWN);
-        }
-    }
-    if !diff.differing.is_empty() {
-        println!("  Different size locally vs remote ({}):", diff.differing.len());
-        for f in diff.differing.iter().take(MAX_SHOWN) {
-            println!("    {f}");
-        }
-        if diff.differing.len() > MAX_SHOWN {
-            println!("    ... and {} more", diff.differing.len() - MAX_SHOWN);
-        }
+/// Show the diverging files for a folder via an `rsync` dry-run (local vs.
+/// remote). A failure here is non-fatal — it just means no preview is shown, so
+/// the user can still choose Override/Continue/Abort.
+fn view_diff(host: &str, local: &Path, remote_path: &str) {
+    println!("\n  rsync dry-run ('>'/'c' = local-only or changed, '*deleting' = remote-only):");
+    if let Err(e) = remote_rsync_preview(host, local, remote_path) {
+        eprintln!("  rsync preview failed: {e}");
     }
     println!();
 }

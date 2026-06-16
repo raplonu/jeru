@@ -28,6 +28,9 @@ pub struct SessionState {
     #[serde(default)]
     pub mutagen_sessions: Vec<String>,
     /// Remote directories to clean up on stop.
+    ///
+    /// Excludes code repos: those are left on the remote and reconciled by the
+    /// conflict manager on the next `session up` rather than wiped on stop.
     #[serde(default)]
     pub remote_dirs: Vec<String>,
     /// Whether to skip remote cleanup on stop.

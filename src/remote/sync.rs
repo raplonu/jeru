@@ -32,6 +32,13 @@ pub struct SyncPair {
     /// Extra mutagen `--ignore` patterns for this pair, on top of any
     /// `.gitignore`-derived ones.
     pub ignore: Vec<String>,
+    /// Whether this pair is a code repo (primary_repo or repos).
+    ///
+    /// Repos are deliberately left on the remote when a session ends: their
+    /// divergence is reconciled by the conflict manager (`remote_check_empty`
+    /// → `remote_compare` → resolve) on the next `session up`, rather than
+    /// being wiped — that avoids destroying remote-only work between sessions.
+    pub is_repo: bool,
 }
 
 /// Result of comparing a local sync-pair directory against its remote
@@ -137,7 +144,7 @@ pub fn build_sync_pairs(
     let local_home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
     let mut inner = Vec::new();
 
-    let mut push = |local: PathBuf, ignore: Vec<String>| -> Result<()> {
+    let mut push = |local: PathBuf, ignore: Vec<String>, is_repo: bool| -> Result<()> {
         let rpath = to_remote(&local, &local_home, remote_home)?;
         inner.push(SyncPair {
             session: session_name(project_name, &local),
@@ -145,6 +152,7 @@ pub fn build_sync_pairs(
             remote_path: rpath,
             local,
             ignore,
+            is_repo,
         });
         Ok(())
     };
@@ -155,6 +163,7 @@ pub fn build_sync_pairs(
     push(
         project_dir(config, project_name),
         vec![format!("{project_name}{WORKSPACE_EXT}")],
+        false,
     )?;
 
     // primary_repo + repos, deduplicated by path
@@ -162,7 +171,7 @@ pub fn build_sync_pairs(
     let mut push_repo = |raw: &str| -> Result<()> {
         let p = expand_tilde(raw)?;
         if seen_paths.insert(p.clone()) {
-            push(p, Vec::new())?;
+            push(p, Vec::new(), true)?;
         }
         Ok(())
     };
@@ -176,12 +185,12 @@ pub fn build_sync_pairs(
     if !opts.repos_only {
         if opts.knowledge {
             for id in &manifest.knowledge_sets {
-                push(knowledge_dir(config, id), Vec::new())?;
+                push(knowledge_dir(config, id), Vec::new(), false)?;
             }
         }
         if opts.resources {
             for res in &manifest.resources {
-                push(expand_tilde(res)?, Vec::new())?;
+                push(expand_tilde(res)?, Vec::new(), false)?;
             }
         }
     }
@@ -328,6 +337,40 @@ fn diff_listings(local: &[(String, u64)], remote: &[(String, u64)]) -> DirDiff {
     diff.local_only.extend(local[i..].iter().map(|(p, _)| p.clone()));
     diff.remote_only.extend(remote[j..].iter().map(|(p, _)| p.clone()));
     diff
+}
+
+/// Build the `(src, dst)` argument pair for an rsync between a local directory
+/// and its remote counterpart. The trailing slashes make rsync compare the
+/// directories' *contents* rather than nesting one inside the other.
+fn rsync_endpoints(local: &Path, host: &str, remote_path: &str) -> (String, String) {
+    (
+        format!("{}/", local.to_string_lossy()),
+        format!("{host}:{remote_path}/"),
+    )
+}
+
+/// Show how `local` differs from its remote counterpart via an `rsync` dry-run.
+///
+/// This is the interactive "view" for a conflict flagged by [`remote_compare`]:
+/// a checksum-based, itemized dry run (`rsync -rni --checksum --delete`) that
+/// lists the diverging files from the local side's perspective —
+/// `<`/`>`/`c` entries are local additions or content changes, `*deleting`
+/// entries exist only on the remote. Nothing is written (`-n`); `.git` is
+/// excluded to mirror the detection listing. Output streams straight to the
+/// terminal.
+pub fn remote_rsync_preview(host: &str, local: &Path, remote_path: &str) -> Result<()> {
+    if !local.is_dir() {
+        println!("  Local directory does not exist — every remote file is remote-only.");
+        return Ok(());
+    }
+    let (src, dst) = rsync_endpoints(local, host, remote_path);
+    let status = Command::new("rsync")
+        .args(["-rni", "--checksum", "--delete", "--exclude=.git", &src, &dst])
+        .status()?;
+    if !status.success() {
+        return Err(Error::RemoteSsh(host.to_string()));
+    }
+    Ok(())
 }
 
 /// Remove all synced remote directories after a session ends.
@@ -607,6 +650,14 @@ mod tests {
     }
 
     #[test]
+    fn rsync_endpoints_have_trailing_slashes() {
+        let (src, dst) =
+            rsync_endpoints(std::path::Path::new("/home/u/repo"), "host", "/home/r/repo");
+        assert_eq!(src, "/home/u/repo/");
+        assert_eq!(dst, "host:/home/r/repo/");
+    }
+
+    #[test]
     fn session_name_is_unique_for_different_paths() {
         let a = session_name("proj", std::path::Path::new("/home/user/code/repo-a"));
         let b = session_name("proj", std::path::Path::new("/home/user/code/repo-b"));
@@ -682,6 +733,19 @@ mod tests {
             !locals.contains(&home.join("knowledge/docs")),
             "knowledge must be excluded: {locals:?}"
         );
+    }
+
+    #[test]
+    fn build_sync_pairs_flags_only_repos() {
+        let home = dirs::home_dir().unwrap();
+        let opts = SyncOptions { knowledge: true, resources: true, repos_only: false };
+        let pairs =
+            build_sync_pairs(&test_config(), "proj", &test_manifest(), "host", "/home/remote", &opts)
+                .unwrap();
+        let repos: Vec<_> = pairs.all().iter().filter(|p| p.is_repo).map(|p| p.local.clone()).collect();
+        // Only the repo dir is flagged; project, knowledge, resources are not.
+        assert_eq!(repos, vec![home.join("code/r1")], "only the repo should be flagged: {repos:?}");
+        assert!(!pairs.project().is_repo, "project dir must not be a repo");
     }
 
     #[test]
