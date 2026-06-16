@@ -96,7 +96,7 @@ fn start_local(
         started_at: now_epoch(),
     };
     state.save(config)?;
-    report(&state, output.as_deref());
+    report(&state);
     Ok(())
 }
 
@@ -222,7 +222,7 @@ fn start_remote(
         started_at: now_epoch(),
     };
     state.save(config)?;
-    report(&state, output.as_deref());
+    report(&state);
     Ok(())
 }
 
@@ -276,26 +276,9 @@ fn init_claude(config: &Config, project: &str) -> Result<()> {
     }
 }
 
-/// Print the session URLs and captured claude output.
-fn report(state: &SessionState, output: Option<&str>) {
-    println!("\nSession '{}' started.", state.id);
-    println!("  VSCode:  {}", crate::vscode::osc8_link(&state.vscode_url));
-    match output {
-        Some(text) if !text.trim().is_empty() => {
-            println!("  Claude:\n{}", indent(text.trim_end()));
-        }
-        _ => println!(
-            "  Claude:  (no output captured yet — `jeru session inspect {}`)",
-            state.id
-        ),
-    }
-}
-
-fn indent(text: &str) -> String {
-    text.lines()
-        .map(|l| format!("    {l}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+fn report(state: &SessionState) {
+    println!();
+    super::control::print_session_info(state);
 }
 
 /// Poll a capture closure until it yields non-empty output or ~30s elapse.

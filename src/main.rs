@@ -173,7 +173,20 @@ enum SessionCommand {
     /// Bring down a session and clean up
     Down {
         /// Session id (project or project@host); omit to pick from a list
+        #[arg(conflicts_with = "all")]
         id: Option<String>,
+        /// Stop all active sessions
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show session details (VSCode URL, Claude output, status)
+    Info {
+        /// Session id (project or project@host); omit to pick from a list
+        #[arg(conflicts_with = "all")]
+        id: Option<String>,
+        /// Show info for all active sessions
+        #[arg(long)]
+        all: bool,
     },
     /// Attach to a session's tmux to watch claude
     #[command(alias = "inspect")]
@@ -327,16 +340,38 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
             session::start(config, &project, remote.as_deref(), &opts)
         }
         SessionCommand::Ls => session::list(config),
-        SessionCommand::Down { id } => match id {
-            Some(id) => session::stop(config, &id),
-            None => match select_session_id(config)? {
-                Some(id) => session::stop(config, &id),
-                None => {
-                    println!("No active sessions.");
-                    Ok(())
+        SessionCommand::Down { id, all } => {
+            if all {
+                session::stop_all(config)
+            } else {
+                match id {
+                    Some(id) => session::stop(config, &id),
+                    None => match select_session_id(config, "Session to bring down")? {
+                        Some(id) => session::stop(config, &id),
+                        None => {
+                            println!("No active sessions.");
+                            Ok(())
+                        }
+                    },
                 }
-            },
-        },
+            }
+        }
+        SessionCommand::Info { id, all } => {
+            if all {
+                session::info_all(config)
+            } else {
+                match id {
+                    Some(id) => session::info(config, &id),
+                    None => match select_session_id(config, "Select session")? {
+                        Some(id) => session::info(config, &id),
+                        None => {
+                            println!("No active sessions.");
+                            Ok(())
+                        }
+                    },
+                }
+            }
+        }
         SessionCommand::Attach { id } => {
             let id = resolve_session_id(config, id)?;
             session::inspect(config, &id)
@@ -355,7 +390,7 @@ fn resolve_session_id(config: &Config, id: Option<String>) -> jeru::Result<Strin
 
 /// Prompt the user to pick an active session, returning its id (or `None` if
 /// there are no active sessions).
-fn select_session_id(config: &Config) -> jeru::Result<Option<String>> {
+fn select_session_id(config: &Config, prompt: &str) -> jeru::Result<Option<String>> {
     let sessions = jeru::SessionState::list(config)?;
     if sessions.is_empty() {
         return Ok(None);
@@ -373,7 +408,7 @@ fn select_session_id(config: &Config) -> jeru::Result<Option<String>> {
         .collect();
 
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Session to bring down")
+        .with_prompt(prompt)
         .items(&labels)
         .default(0)
         .interact()

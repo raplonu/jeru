@@ -46,7 +46,20 @@ pub fn stop(config: &Config, query: &str) -> Result<()> {
     Ok(())
 }
 
-/// List all sessions with their status and URLs.
+/// Stop all active sessions.
+pub fn stop_all(config: &Config) -> Result<()> {
+    let sessions = SessionState::list(config)?;
+    if sessions.is_empty() {
+        println!("No active sessions.");
+        return Ok(());
+    }
+    for s in sessions {
+        stop(config, &s.id)?;
+    }
+    Ok(())
+}
+
+/// List active session IDs (one per line).
 pub fn list(config: &Config) -> Result<()> {
     let sessions = SessionState::list(config)?;
     if sessions.is_empty() {
@@ -54,24 +67,58 @@ pub fn list(config: &Config) -> Result<()> {
         return Ok(());
     }
     for s in sessions {
-        let status = if tmux_has_session(&s.tmux) {
-            "running"
-        } else {
-            "dead"
-        };
-        let scope = match &s.remote {
-            Some(host) => format!("remote {host}"),
-            None => "local".to_string(),
-        };
-        println!(
-            "{id}  [{status}]  {scope}  spawn={spawn}  up {age}",
-            id = s.id,
-            spawn = s.spawn,
-            age = human_age(s.started_at),
-        );
-        println!("    VSCode: {}", crate::vscode::osc8_link(&s.vscode_url));
+        println!("{}", s.id);
     }
     Ok(())
+}
+
+/// Show detailed info for one session.
+pub fn info(config: &Config, query: &str) -> Result<()> {
+    let state = SessionState::find(config, query)?;
+    print_session_info(&state);
+    Ok(())
+}
+
+/// Show detailed info for all active sessions.
+pub fn info_all(config: &Config) -> Result<()> {
+    let sessions = SessionState::list(config)?;
+    if sessions.is_empty() {
+        println!("No active sessions.");
+        return Ok(());
+    }
+    for (i, s) in sessions.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print_session_info(s);
+    }
+    Ok(())
+}
+
+/// Print the canonical session detail block (shared with session startup output).
+pub fn print_session_info(state: &SessionState) {
+    let status = if tmux_has_session(&state.tmux) { "running" } else { "dead" };
+    let scope = match &state.remote {
+        Some(host) => format!("remote {host}"),
+        None => "local".to_string(),
+    };
+    println!("Session '{}' [{status}]", state.id);
+    println!("  Scope:   {scope}");
+    println!("  Spawn:   {}", state.spawn);
+    println!("  Age:     {}", human_age(state.started_at));
+    println!("  VSCode:  {}", crate::vscode::osc8_link(&state.vscode_url));
+    match &state.claude_output {
+        Some(text) if !text.trim().is_empty() => {
+            println!("  Claude:");
+            for line in text.trim_end().lines() {
+                println!("    {line}");
+            }
+        }
+        _ => println!(
+            "  Claude:  (no output captured yet — `jeru session attach {}`)",
+            state.id
+        ),
+    }
 }
 
 /// Attach to (or switch to) a session's local tmux. Blocks until detach.
