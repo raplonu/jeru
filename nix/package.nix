@@ -2,7 +2,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "jeru";
-  version = "0.1.0";
+  version = "0.4.16";
 
   src = lib.cleanSource ../.;
 

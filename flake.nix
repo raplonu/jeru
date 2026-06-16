@@ -7,6 +7,11 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
+    let
+      overlay = final: prev: {
+        jeru = final.callPackage ./nix/package.nix { };
+      };
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -17,5 +22,11 @@
           inputsFrom = [ self.packages.${system}.default ];
           buildInputs = [ pkgs.rust-analyzer pkgs.clippy ];
         };
-      });
+      })
+    // {
+      overlays.default = overlay;
+
+      homeManagerModules.jeru = import ./nix/hm-module.nix;
+      homeManagerModules.default = self.homeManagerModules.jeru;
+    };
 }
