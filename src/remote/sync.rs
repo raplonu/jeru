@@ -200,19 +200,32 @@ pub fn build_sync_pairs(
 
 // ── mutagen ───────────────────────────────────────────────────────────────────
 
-/// Return the remote paths of any directories that already exist and are non-empty.
+/// Return the remote paths of any directories that already exist and hold
+/// content mutagen would actually sync (i.e. non-empty after ignore patterns
+/// are applied).
 ///
 /// Call this before `remote_mkdirs` / `mutagen_start` to enforce a clean-slate
 /// invariant: stale files from a previous session (e.g. files deleted locally
 /// but still present on the remote) would be propagated back to local by
 /// mutagen's two-way reconciliation, corrupting the working tree.
+///
+/// Ignored paths (`.gitignore` entries and pair-specific ignores — e.g. a
+/// `build/` dir) are excluded: mutagen never syncs them, so they must not flag
+/// a directory as non-empty.
 pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>> {
-    // For each path: print it if the directory exists AND is non-empty.
+    // For each path: print it if the directory exists AND contains at least one
+    // non-ignored entry. `find … -prune` skips ignored paths; `-print -quit`
+    // stops at the first surviving entry.
     let checks = pairs
         .iter()
         .map(|p| {
             let q = sq(&p.remote_path);
-            format!("[ ! -d {q} ] || [ -z \"$(ls -A {q} 2>/dev/null)\" ] || echo {q}")
+            match find_prune_expr(&p.remote_path, &pair_ignore_patterns(p)) {
+                Some(expr) => format!(
+                    "{{ [ -d {q} ] && [ -n \"$(find {q} -mindepth 1 \\( {expr} \\) -prune -o -print -quit)\" ] && echo {q}; }}"
+                ),
+                None => format!("[ ! -d {q} ] || [ -z \"$(ls -A {q} 2>/dev/null)\" ] || echo {q}"),
+            }
         })
         .collect::<Vec<_>>()
         .join("; ");
@@ -242,16 +255,27 @@ pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>>
 ///
 /// `.git` directories are excluded from both listings (large, and not
 /// actionable via this prompt). Symlinks are excluded too (`find -type f`
-/// only matches regular files) — a known, accepted gap. Requires GNU `find`
-/// (`-printf`), i.e. a Linux remote (and local) host.
+/// only matches regular files) — a known, accepted gap. Files mutagen would
+/// ignore (`.gitignore` / pair ignores) are filtered from both sides, so they
+/// never appear as a conflict. Requires GNU `find` (`-printf`), i.e. a Linux
+/// remote (and local) host.
 ///
 /// If `pair.local` does not exist, it's treated as "local has nothing": any
 /// remote files become `remote_only`, correctly triggering a conflict prompt
 /// rather than a silent override.
 pub fn remote_compare(host: &str, pair: &SyncPair) -> Result<DirDiff> {
-    let local = list_files_local(&pair.local)?;
-    let remote = list_files_remote(host, &pair.remote_path)?;
+    let patterns = pair_ignore_patterns(pair);
+    let local = filter_listing(list_files_local(&pair.local)?, &patterns);
+    let remote = filter_listing(list_files_remote(host, &pair.remote_path)?, &patterns);
     Ok(diff_listings(&local, &remote))
+}
+
+/// Drop entries whose sync-relative path is ignored by `patterns`.
+fn filter_listing(listing: Vec<(String, u64)>, patterns: &[String]) -> Vec<(String, u64)> {
+    listing
+        .into_iter()
+        .filter(|(p, _)| !path_ignored(p, patterns))
+        .collect()
 }
 
 /// `find <dir> -type f -not -path '*/.git/*' -printf '%P\t%s\n' | sort`,
@@ -500,6 +524,109 @@ fn gitignore_patterns(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The full set of mutagen `--ignore` patterns for a pair: its `.gitignore`
+/// entries plus any pair-specific `ignore` patterns.
+///
+/// This is the single source of truth for "what mutagen won't sync", shared by
+/// [`mutagen_start`] (which passes them to mutagen) and by the pre-flight
+/// emptiness/conflict checks (which must skip the same paths — otherwise a
+/// remote `build/` dir that mutagen ignores would be flagged as a spurious
+/// conflict).
+fn pair_ignore_patterns(pair: &SyncPair) -> Vec<String> {
+    let mut patterns = gitignore_patterns(&pair.local);
+    patterns.extend(pair.ignore.iter().cloned());
+    patterns
+}
+
+/// Whether a sync-relative path is excluded by mutagen-style ignore `patterns`.
+///
+/// Supports the subset actually used here: a pattern with no `/` matches that
+/// name at any depth (`build`, `*.log`); a pattern containing `/` is anchored
+/// to the sync root (`/dist`, `sub/cache`) and also matches everything beneath
+/// it. A trailing `/` (directory marker) is treated the same as without — file
+/// listings only contain regular files, so a directory's contents match by its
+/// leading path components. `*`/`?` wildcards are honoured per component.
+fn path_ignored(rel: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| pattern_matches(p, rel))
+}
+
+fn pattern_matches(pattern: &str, rel: &str) -> bool {
+    let pat = pattern.trim_end_matches('/');
+    // Anchored to the sync root if it has a leading or internal slash (gitignore
+    // rule); otherwise it matches a name at any depth.
+    let anchored = pat.starts_with('/') || pat.contains('/');
+    let pat = pat.strip_prefix('/').unwrap_or(pat);
+    if pat.is_empty() {
+        return false;
+    }
+    if anchored {
+        // `pat`'s components must match `rel`'s leading components, so the
+        // pattern matches the path itself and anything beneath it.
+        let pat_parts: Vec<&str> = pat.split('/').collect();
+        let rel_parts: Vec<&str> = rel.split('/').collect();
+        rel_parts.len() >= pat_parts.len()
+            && pat_parts.iter().zip(&rel_parts).all(|(p, r)| glob_match(p, r))
+    } else {
+        rel.split('/').any(|component| glob_match(pat, component))
+    }
+}
+
+/// Match a single path component against a glob with `*` (any run of
+/// non-separator chars) and `?` (one char). No `/` handling — callers split on
+/// `/` first.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star_pi, mut star_ti): (Option<usize>, usize) = (None, 0);
+    while ti < txt.len() {
+        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == txt[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pat.len() && pat[pi] == '*' {
+            star_pi = Some(pi);
+            star_ti = ti;
+            pi += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat.len() && pat[pi] == '*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
+/// Build a `find` expression (predicates OR-joined) that matches the paths to
+/// *prune* for a pair's ignore `patterns`, anchored under `root`. Returns
+/// `None` when there is nothing to exclude.
+///
+/// This mirrors [`path_ignored`] for the remote pre-flight emptiness check: it
+/// is a best-effort coarse filter (the authoritative, per-file decision is made
+/// later by [`remote_compare`] using `path_ignored`).
+fn find_prune_expr(root: &str, patterns: &[String]) -> Option<String> {
+    let preds: Vec<String> = patterns
+        .iter()
+        .filter_map(|p| {
+            let pat = p.trim_end_matches('/');
+            let anchored = pat.starts_with('/') || pat.contains('/');
+            let pat = pat.strip_prefix('/').unwrap_or(pat);
+            if pat.is_empty() {
+                None
+            } else if anchored {
+                Some(format!("-path {}", sq(&format!("{root}/{pat}"))))
+            } else {
+                Some(format!("-name {}", sq(pat)))
+            }
+        })
+        .collect();
+    (!preds.is_empty()).then(|| preds.join(" -o "))
+}
+
 /// Start (or resume) a mutagen session for every sync pair.
 ///
 /// All sessions are tagged with `jeru-project=<project>` so they can be
@@ -507,8 +634,7 @@ fn gitignore_patterns(dir: &Path) -> Vec<String> {
 pub fn mutagen_start(pairs: &[SyncPair], project: &str) -> Result<()> {
     let label = format!("jeru-project={project}");
     for p in pairs {
-        let mut patterns = gitignore_patterns(&p.local);
-        patterns.extend(p.ignore.iter().cloned());
+        let patterns = pair_ignore_patterns(p);
         let mut cmd = Command::new("mutagen");
         cmd.args([
             "sync",
@@ -809,6 +935,80 @@ mod tests {
         assert_eq!(diff.remote_only, vec!["c.txt".to_string()]);
         assert_eq!(diff.differing, vec!["d.txt".to_string()]);
         assert!(!diff.is_safe());
+    }
+
+    #[test]
+    fn glob_match_literal_and_wildcards() {
+        assert!(glob_match("build", "build"));
+        assert!(!glob_match("build", "builder"));
+        assert!(glob_match("*.log", "error.log"));
+        assert!(!glob_match("*.log", "log.txt"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn path_ignored_unanchored_matches_any_depth() {
+        let patterns = vec!["build".to_string()];
+        assert!(path_ignored("build", &patterns));
+        assert!(path_ignored("build/out.o", &patterns));
+        assert!(path_ignored("src/build/out.o", &patterns));
+        assert!(!path_ignored("builder/x", &patterns));
+        assert!(!path_ignored("src/main.rs", &patterns));
+    }
+
+    #[test]
+    fn path_ignored_trailing_slash_and_wildcards() {
+        // `build/` (directory marker) behaves like `build`.
+        assert!(path_ignored("build/out.o", &["build/".to_string()]));
+        // `*.log` matches the basename at any depth.
+        assert!(path_ignored("a/b/c.log", &["*.log".to_string()]));
+        assert!(!path_ignored("a/b/c.txt", &["*.log".to_string()]));
+    }
+
+    #[test]
+    fn path_ignored_anchored_to_root() {
+        let patterns = vec!["/dist".to_string()];
+        assert!(path_ignored("dist", &patterns));
+        assert!(path_ignored("dist/app.js", &patterns));
+        // Anchored: a nested `dist` is not matched.
+        assert!(!path_ignored("pkg/dist/app.js", &patterns));
+    }
+
+    #[test]
+    fn path_ignored_anchored_multi_component() {
+        let patterns = vec!["sub/cache".to_string()];
+        assert!(path_ignored("sub/cache", &patterns));
+        assert!(path_ignored("sub/cache/x", &patterns));
+        assert!(!path_ignored("sub/other", &patterns));
+    }
+
+    #[test]
+    fn filter_listing_drops_ignored_files() {
+        let listing = vec![
+            ("src/main.rs".to_string(), 10),
+            ("build/out.o".to_string(), 20),
+            ("README.md".to_string(), 30),
+        ];
+        let kept = filter_listing(listing, &["build".to_string()]);
+        let paths: Vec<_> = kept.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["src/main.rs", "README.md"]);
+    }
+
+    #[test]
+    fn find_prune_expr_translates_patterns() {
+        let patterns = vec!["build".to_string(), "/dist".to_string(), "sub/cache/".to_string()];
+        let expr = find_prune_expr("/home/r/repo", &patterns).unwrap();
+        assert_eq!(
+            expr,
+            "-name 'build' -o -path '/home/r/repo/dist' -o -path '/home/r/repo/sub/cache'"
+        );
+    }
+
+    #[test]
+    fn find_prune_expr_empty_when_no_patterns() {
+        assert!(find_prune_expr("/home/r/repo", &[]).is_none());
     }
 
     #[test]
