@@ -49,14 +49,15 @@ pub struct McpTunnel {
 
 /// The shell command that runs `claude remote-control` for a *local* session,
 /// to be used as a tmux window command.
-pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>) -> String {
+pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>, name: &str) -> String {
     let env = match token {
         Some(t) => format!("OBSIDIAN_API_KEY={} ", sq(t)),
         None => String::new(),
     };
     format!(
-        "cd {cwd} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}",
-        cwd = sq(cwd)
+        "cd {cwd} && {env}{CLAUDE_BIN} remote-control --name {name} --spawn {spawn}",
+        cwd = sq(cwd),
+        name = sq(name),
     )
 }
 
@@ -74,6 +75,7 @@ pub fn remote_loop_script(
     remote_project_path: &str,
     spawn: &str,
     mcp: Option<&McpTunnel>,
+    name: &str,
 ) -> String {
     let env = match mcp.and_then(|m| m.token.as_deref()) {
         Some(token) => format!("OBSIDIAN_API_KEY={} ", sq(token)),
@@ -84,8 +86,9 @@ pub fn remote_loop_script(
     // readable over `remote_capture_pane` — otherwise the session dies, ssh drops,
     // and the loop respawns claude forever, erasing the error before it's seen.
     let claude = format!(
-        "cd {rp} && {env}{CLAUDE_BIN} remote-control --spawn {spawn}; exec sh",
-        rp = sq(remote_project_path)
+        "cd {rp} && {env}{CLAUDE_BIN} remote-control --name {name} --spawn {spawn}; exec sh",
+        rp = sq(remote_project_path),
+        name = sq(name),
     );
     let inner = format!("tmux new-session -A -s {} {}", sq(remote_tmux), sq(&claude));
 
@@ -275,28 +278,29 @@ mod tests {
 
     #[test]
     fn local_cmd_with_token_and_spawn() {
-        let cmd = claude_local_cmd("/home/u/proj", "worktree", Some("secret"));
+        let cmd = claude_local_cmd("/home/u/proj", "worktree", Some("secret"), "proj");
         assert!(cmd.contains("cd '/home/u/proj'"), "cmd: {cmd}");
         assert!(cmd.contains("OBSIDIAN_API_KEY='secret'"), "cmd: {cmd}");
-        assert!(cmd.contains("claude remote-control --spawn worktree"), "cmd: {cmd}");
+        assert!(cmd.contains("remote-control --name 'proj' --spawn worktree"), "cmd: {cmd}");
     }
 
     #[test]
     fn local_cmd_without_token_omits_env() {
-        let cmd = claude_local_cmd("/home/u/proj", "same-dir", None);
+        let cmd = claude_local_cmd("/home/u/proj", "same-dir", None, "proj");
         assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
-        assert!(cmd.contains("claude remote-control --spawn same-dir"), "cmd: {cmd}");
+        assert!(cmd.contains("remote-control --name 'proj' --spawn same-dir"), "cmd: {cmd}");
     }
 
     #[test]
     fn remote_loop_wraps_remote_tmux_and_reconnects() {
-        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None);
+        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None, "proj");
         // Script is meant to be run via `sh`.
         assert!(script.starts_with("#!/bin/sh\n"), "script: {script}");
         // Runs claude inside a remote tmux session via new-session -A.
         assert!(script.contains("tmux new-session -A -s"), "script: {script}");
         assert!(script.contains("jeru-proj"), "script: {script}");
-        assert!(script.contains("remote-control --spawn session"), "script: {script}");
+        assert!(script.contains("remote-control --name"), "script: {script}");
+        assert!(script.contains("--spawn session"), "script: {script}");
         // Fallback shell keeps the remote session alive if claude exits (trust error).
         assert!(script.contains("; exec sh"), "script: {script}");
         // Self-reconnecting loop.
@@ -312,7 +316,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("remote-loop.sh");
-        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None);
+        let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None, "proj");
         write_remote_loop_script(&path, &script).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap();
@@ -342,7 +346,7 @@ mod tests {
     #[test]
     fn local_cmd_is_valid_shell() {
         // Paths/tokens with awkward characters must survive quoting.
-        let cmd = claude_local_cmd("/home/u/it's a dir", "same-dir", Some("to'ken"));
+        let cmd = claude_local_cmd("/home/u/it's a dir", "same-dir", Some("to'ken"), "proj");
         assert!(sh_parses(&cmd), "not valid shell: {cmd}");
     }
 
@@ -361,6 +365,7 @@ mod tests {
             "/home/u/it's a dir",
             "worktree",
             Some(&tunnel),
+            "proj@user@host",
         );
         assert!(sh_parses(&script), "not valid shell: {script}");
     }
@@ -373,7 +378,7 @@ mod tests {
             token: Some("secret-token".to_string()),
         };
         let script =
-            remote_loop_script("myhost", "jeru-proj", "/remote/proj", "same-dir", Some(&tunnel));
+            remote_loop_script("myhost", "jeru-proj", "/remote/proj", "same-dir", Some(&tunnel), "proj@myhost");
         assert!(script.contains("-R 27123:127.0.0.1:27123"), "script: {script}");
         assert!(
             script.find("-R ").unwrap() < script.find("myhost").unwrap(),

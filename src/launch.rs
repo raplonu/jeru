@@ -55,9 +55,10 @@ pub fn prepare_local_session(config: &Config, name: &str, repos: bool) -> Result
     Ok(LocalLaunch { cwd, token })
 }
 
-fn claude_command(cwd: PathBuf, extra: &[String]) -> Command {
+fn claude_command(cwd: PathBuf, name: &str, extra: &[String]) -> Command {
     let mut cmd = Command::new(CLAUDE_BIN);
     cmd.current_dir(cwd);
+    cmd.args(["--name", name]);
     cmd.args(extra);
     cmd
 }
@@ -95,7 +96,7 @@ pub fn claude_for_project(config: &Config, name: &str, extra: &[String]) -> Resu
     let cwd = project_dir(config, name);
     write_settings(config, name)?;
     write_mcp_json_for_dir(&cwd, config)?;
-    let mut cmd = claude_command(cwd, extra);
+    let mut cmd = claude_command(cwd, name, extra);
     inject_obsidian_token(&mut cmd, config);
     Ok(cmd)
 }
@@ -119,7 +120,7 @@ pub fn claude_for_repos(config: &Config, name: &str, extra: &[String]) -> Result
         .collect::<Result<Vec<_>>>()?;
     write_settings_for_dir(&cwd, &add_dirs)?;
     write_mcp_json_for_dir(&cwd, config)?;
-    let mut cmd = claude_command(cwd, extra);
+    let mut cmd = claude_command(cwd, name, extra);
     inject_obsidian_token(&mut cmd, config);
     Ok(cmd)
 }

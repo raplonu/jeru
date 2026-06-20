@@ -66,7 +66,7 @@ fn start_local(
     let launch = prepare_local_session(config, project, opts.repos)?;
     let cwd = launch.cwd.to_string_lossy().into_owned();
 
-    let cmd = claude_local_cmd(&cwd, &opts.spawn, launch.token.as_deref());
+    let cmd = claude_local_cmd(&cwd, &opts.spawn, launch.token.as_deref(), id);
     println!("Launching session '{id}' in tmux…");
     // If claude exits immediately (e.g. the workspace-trust error), `exec sh`
     // keeps the pane alive so its output stays readable for trust detection
@@ -199,7 +199,7 @@ fn start_remote(
 
     let tunnel = build_mcp_tunnel(config);
     let remote_tmux = remote_tmux_name(project);
-    let script = remote_loop_script(host, &remote_tmux, &remote_cwd, &opts.spawn, tunnel.as_ref());
+    let script = remote_loop_script(host, &remote_tmux, &remote_cwd, &opts.spawn, tunnel.as_ref(), id);
     let script_path = SessionState::dir(config).join(format!("{tmux}-remote-loop.sh"));
     write_remote_loop_script(&script_path, &script)?;
     let claude_cmd = remote_loop_tmux_cmd(&script_path);
