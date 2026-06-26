@@ -94,7 +94,7 @@ impl SyncPairs {
 
 /// Fetch the remote user's home directory via SSH.
 pub fn remote_home(host: &str) -> Result<String> {
-    let out = Command::new("ssh").args([host, "echo $HOME"]).output()?;
+    let out = ssh_bash_output(host, "echo $HOME")?;
     if !out.status.success() {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -230,7 +230,8 @@ pub fn remote_check_empty(host: &str, pairs: &[SyncPair]) -> Result<Vec<String>>
         .collect::<Vec<_>>()
         .join("; ");
 
-    let out = Command::new("ssh").args([host, &checks]).output()?;
+    let script = format!("{checks}\ntrue");
+    let out = ssh_bash_output(host, &script)?;
     if !out.status.success() {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -307,7 +308,7 @@ fn list_files_remote(host: &str, remote_path: &str) -> Result<Vec<(String, u64)>
         "find {} -type f -not -path '*/.git/*' -printf '%P\\t%s\\n' | sort",
         sq(remote_path)
     );
-    let out = Command::new("ssh").args([host, &cmd]).output()?;
+    let out = ssh_bash_output(host, &cmd)?;
     if !out.status.success() {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -415,7 +416,7 @@ pub fn remote_rm_dirs(host: &str, dirs: &[String]) -> Result<()> {
     }
     let paths = dirs.iter().map(|d| sq(d)).collect::<Vec<_>>().join(" ");
     let cmd = format!("rm -rf {paths}");
-    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    let ok = ssh_bash_ok(host, &cmd)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -433,7 +434,7 @@ pub fn remote_mkdirs(host: &str, pairs: &[SyncPair]) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     let cmd = format!("mkdir -p {args}");
-    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    let ok = ssh_bash_ok(host, &cmd)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -453,7 +454,7 @@ pub fn remote_write_settings(host: &str, remote_dir: &str, dirs: &[String]) -> R
     let settings_path = format!("{claude_dir}/settings.json");
 
     let cat_cmd = format!("cat {} 2>/dev/null", sq(&settings_path));
-    let out = Command::new("ssh").args([host, &cat_cmd]).output()?;
+    let out = ssh_bash_output(host, &cat_cmd)?;
 
     let mut root = match serde_json::from_slice::<Value>(&out.stdout) {
         Ok(Value::Object(map)) => map,
@@ -471,17 +472,12 @@ pub fn remote_write_settings(host: &str, remote_dir: &str, dirs: &[String]) -> R
     let mut content = serde_json::to_string_pretty(&Value::Object(root))?;
     content.push('\n');
 
-    let write_cmd = format!("mkdir -p {} && cat > {}", sq(&claude_dir), sq(&settings_path));
-    let mut child = Command::new("ssh")
-        .args([host, &write_cmd])
-        .stdin(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(content.as_bytes())?;
-    let ok = child.wait()?.success();
+    let script = format!(
+        "mkdir -p {dir} && cat > {path} <<'__JERU_EOF__'\n{content}__JERU_EOF__\n",
+        dir = sq(&claude_dir),
+        path = sq(&settings_path),
+    );
+    let ok = ssh_bash_ok(host, &script)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -495,13 +491,12 @@ pub fn remote_write_file(host: &str, path: &str, content: &str) -> Result<()> {
         .parent()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let cmd = format!("mkdir -p {} && cat > {}", sq(&dir), sq(path));
-    let mut child = Command::new("ssh")
-        .args([host, &cmd])
-        .stdin(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().expect("piped stdin").write_all(content.as_bytes())?;
-    let ok = child.wait()?.success();
+    let script = format!(
+        "mkdir -p {d} && cat > {p} <<'__JERU_EOF__'\n{content}__JERU_EOF__\n",
+        d = sq(&dir),
+        p = sq(path),
+    );
+    let ok = ssh_bash_ok(host, &script)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -752,6 +747,28 @@ pub fn remote_add_dirs(
 /// Single-quote a shell argument, escaping any single quotes inside.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Run a script on `host` under bash via SSH, piped through stdin so the
+/// remote login shell is irrelevant.
+fn ssh_bash_output(host: &str, script: &str) -> std::io::Result<std::process::Output> {
+    let mut child = Command::new("ssh")
+        .arg(host)
+        .arg("bash")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(script.as_bytes())?;
+    child.wait_with_output()
+}
+
+fn ssh_bash_ok(host: &str, script: &str) -> std::io::Result<bool> {
+    Ok(ssh_bash_output(host, script)?.status.success())
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

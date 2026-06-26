@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::constants::CLAUDE_BIN;
 use crate::error::{Error, Result};
@@ -222,7 +223,7 @@ fn tmux_status(args: &[&str]) -> Result<()> {
 /// Capture the remote claude tmux pane over ssh (`-J` joins wrapped lines).
 pub fn remote_capture_pane(host: &str, remote_tmux: &str) -> Result<String> {
     let cmd = format!("tmux capture-pane -p -J -t {}", sq(remote_tmux));
-    let out = Command::new("ssh").args([host, &cmd]).output()?;
+    let out = ssh_bash_output(host, &cmd)?;
     if !out.status.success() {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -236,7 +237,7 @@ pub fn remote_kill_tmux(host: &str, remote_tmux: &str) -> Result<()> {
         "tmux has-session -t {t} 2>/dev/null && tmux kill-session -t {t} || true",
         t = sq(remote_tmux)
     );
-    let ok = Command::new("ssh").args([host, &cmd]).status()?.success();
+    let ok = ssh_bash_ok(host, &cmd)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
@@ -248,6 +249,28 @@ pub fn remote_kill_tmux(host: &str, remote_tmux: &str) -> Result<()> {
 /// Single-quote a shell argument, escaping any single quotes inside.
 pub(crate) fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Run a script on `host` under bash via SSH, piped through stdin so the
+/// remote login shell is irrelevant.
+fn ssh_bash_output(host: &str, script: &str) -> std::io::Result<std::process::Output> {
+    let mut child = Command::new("ssh")
+        .arg(host)
+        .arg("bash")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(script.as_bytes())?;
+    child.wait_with_output()
+}
+
+fn ssh_bash_ok(host: &str, script: &str) -> std::io::Result<bool> {
+    Ok(ssh_bash_output(host, script)?.status.success())
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
