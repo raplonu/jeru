@@ -1,4 +1,4 @@
-# jeru - A fully **vibe coded** rust project manager
+# jeru - A fully **vibe coded** project manager coded in rust
 
 Personal project tree manager. Each project bundles its code repos, knowledge sets, and resources into a single manifest so they can be opened together in Claude Code and VSCode with one command — locally or on a remote machine.
 
