@@ -5,6 +5,22 @@ use std::process::{Command, Stdio};
 use crate::constants::CLAUDE_BIN;
 use crate::error::{Error, Result};
 
+/// Named tmux socket used for all remote sessions.  `ssh -t` (PTY, login
+/// shell) and `ssh host bash` (no PTY) can inherit different `$TMPDIR` values,
+/// which makes tmux pick different socket directories.  All remote tmux
+/// commands pin `TMUX_TMPDIR=/tmp` and use `-L jeru` so they always hit the
+/// same server regardless of environment.
+const REMOTE_TMUX_SOCKET: &str = "jeru";
+
+/// Path of the remote file that the claude pane's output is logged to via
+/// `tmux pipe-pane`.  We read claude's startup output (and detect the
+/// workspace-trust error) from this file rather than `tmux capture-pane`,
+/// because some tmux builds (e.g. dgx's `next-3.4`) have a broken
+/// `capture-pane` that returns garbage and crashes the server.
+fn remote_log_path(remote_tmux: &str) -> String {
+    format!("/tmp/{remote_tmux}.log")
+}
+
 // ── VSCode remote ─────────────────────────────────────────────────────────────
 
 /// The `vscode://vscode-remote/...` URI that opens `remote_path` on `host` over Remote SSH.
@@ -66,10 +82,13 @@ pub fn claude_local_cmd(cwd: &str, spawn: &str, token: Option<&str>, name: &str)
 /// ssh that runs `claude remote-control` inside a tmux session **on the remote
 /// host**, so claude survives ssh disconnects.
 ///
-/// `tmux new-session -A` creates the remote session (running claude) on first
-/// connect and re-attaches to the still-running claude on every reconnect. The
-/// `-R` reverse tunnel (when `mcp` is set) is re-established each reconnect,
-/// keeping Obsidian MCP reachable.
+/// The inner command creates the remote session **detached** (running claude),
+/// turns on `pipe-pane` logging so jeru can read claude's output from a file
+/// (see [`remote_log_path`] — `capture-pane` is unusable on some tmux builds),
+/// then attaches.  On reconnect the session already exists, so `new-session`
+/// is a harmless no-op and we simply re-enable logging and re-attach to the
+/// still-running claude.  The `-R` reverse tunnel (when `mcp` is set) is
+/// re-established each reconnect, keeping Obsidian MCP reachable.
 pub fn remote_loop_script(
     host: &str,
     remote_tmux: &str,
@@ -83,15 +102,30 @@ pub fn remote_loop_script(
         None => String::new(),
     };
     // `; exec sh`: if claude exits immediately (e.g. the workspace-trust error),
-    // keep the remote tmux session alive with a fallback shell so its output stays
-    // readable over `remote_capture_pane` — otherwise the session dies, ssh drops,
-    // and the loop respawns claude forever, erasing the error before it's seen.
+    // keep the remote tmux session alive with a fallback shell so its output
+    // stays in the pipe-pane log — otherwise the session dies, ssh drops, and
+    // the loop respawns claude forever, erasing the error before it's seen.
     let claude = format!(
         "cd {rp} && {env}{CLAUDE_BIN} remote-control --name {name} --spawn {spawn}; exec sh",
         rp = sq(remote_project_path),
         name = sq(name),
     );
-    let inner = format!("tmux new-session -A -s {} {}", sq(remote_tmux), sq(&claude));
+    let log = remote_log_path(remote_tmux);
+    // Three tmux commands sequenced with `;` (no shell control flow, so this
+    // parses identically under sh and the remote login shell, which may be
+    // fish). `env TMUX_TMPDIR=/tmp` pins the socket dir (fish has no inline
+    // `VAR=val cmd`). `new-session -d` fails harmlessly if the session already
+    // exists (reconnect); `2>/dev/null` swallows that. `pipe-pane` (re-run
+    // without `-o`) tees the pane to the log file. `attach` joins the session.
+    let tmux = format!("env TMUX_TMPDIR=/tmp tmux -L {}", REMOTE_TMUX_SOCKET);
+    let inner = format!(
+        "{tmux} new-session -d -s {sess} {cmd} 2>/dev/null; \
+         {tmux} pipe-pane -t {sess} {pipe}; \
+         {tmux} attach -t {sess}",
+        sess = sq(remote_tmux),
+        cmd = sq(&claude),
+        pipe = sq(&format!("cat >> {log}")),
+    );
 
     let forward = match mcp {
         Some(m) => format!("-R {p}:{h}:{p} ", p = m.port, h = m.host),
@@ -132,18 +166,20 @@ pub fn remote_loop_tmux_cmd(path: &Path) -> String {
 // ── tmux control ───────────────────────────────────────────────────────────────
 
 /// Width/height for detached sessions. A detached session has no client to size
-/// it, so it defaults to 80 columns and `capture-pane` returns claude's output
-/// wrapped at that width — splitting long remote-control URLs across rows. A
-/// wide pane keeps the URL on one line. On `inspect`, attaching resizes the
-/// session to the client's terminal, so this only affects the detached period.
-const DETACHED_WIDTH: &str = "240";
-const DETACHED_HEIGHT: &str = "50";
+/// it, so it defaults to 80 columns and claude's output wraps at that width —
+/// splitting long remote-control URLs across rows. A wide pane keeps the URL on
+/// one line. The remote claude inherits this size (the loop's `ssh -t` PTY is
+/// this pane), so [`render_screen`] replays its output at the same dimensions.
+/// On `inspect`, attaching resizes the session to the client's terminal, so
+/// this only affects the detached period.
+pub(crate) const DETACHED_WIDTH: u16 = 240;
+pub(crate) const DETACHED_HEIGHT: u16 = 50;
 
 /// Create a detached tmux session with a first window running `cmd`.
 pub fn tmux_new_detached(session: &str, window: &str, cmd: &str) -> Result<()> {
     tmux_status(&[
-        "new-session", "-d", "-x", DETACHED_WIDTH, "-y", DETACHED_HEIGHT, "-s", session, "-n",
-        window, cmd,
+        "new-session", "-d", "-x", &DETACHED_WIDTH.to_string(), "-y", &DETACHED_HEIGHT.to_string(),
+        "-s", session, "-n", window, cmd,
     ])
 }
 
@@ -220,28 +256,69 @@ fn tmux_status(args: &[&str]) -> Result<()> {
 
 // ── remote tmux control (over ssh) ─────────────────────────────────────────────
 
-/// Capture the remote claude tmux pane over ssh (`-J` joins wrapped lines).
-pub fn remote_capture_pane(host: &str, remote_tmux: &str) -> Result<String> {
-    let cmd = format!("tmux capture-pane -p -J -t {}", sq(remote_tmux));
-    let out = ssh_bash_output(host, &cmd)?;
-    if !out.status.success() {
-        return Err(Error::RemoteSsh(host.to_string()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Kill the remote claude tmux session over ssh (gracefully ending claude). A
+/// Kill the remote claude tmux session over ssh (gracefully ending claude) and
+/// remove its pipe-pane log so the next session starts with a clean capture. A
 /// missing session is treated as success.
 pub fn remote_kill_tmux(host: &str, remote_tmux: &str) -> Result<()> {
+    let tmux = format!("TMUX_TMPDIR=/tmp tmux -L {}", REMOTE_TMUX_SOCKET);
     let cmd = format!(
-        "tmux has-session -t {t} 2>/dev/null && tmux kill-session -t {t} || true",
-        t = sq(remote_tmux)
+        "{tmux} has-session -t {t} 2>/dev/null && {tmux} kill-session -t {t}; rm -f {log}; true",
+        t = sq(remote_tmux),
+        log = sq(&remote_log_path(remote_tmux)),
     );
     let ok = ssh_bash_ok(host, &cmd)?;
     if !ok {
         return Err(Error::RemoteSsh(host.to_string()));
     }
     Ok(())
+}
+
+/// Poll the remote claude output over a single SSH connection.
+///
+/// Reads the `pipe-pane` log file (see [`remote_log_path`]) rather than
+/// `tmux capture-pane`, which is broken on some tmux builds.  The polling loop
+/// runs *on the remote* so only one SSH round-trip is paid.  Returns the raw
+/// (terminal-control-laden) log once it is non-empty, or empty after
+/// `timeout_secs` elapse.  Callers should clean it with [`render_screen`].
+pub fn remote_poll_capture(host: &str, remote_tmux: &str, timeout_secs: u32) -> Result<String> {
+    let log = remote_log_path(remote_tmux);
+    let script = format!(
+        concat!(
+            "log={log}\n",
+            "end=$((SECONDS + {timeout}))\n",
+            "while [ $SECONDS -lt $end ]; do\n",
+            "  if [ -s \"$log\" ]; then\n",
+            "    cat \"$log\"\n",
+            "    exit 0\n",
+            "  fi\n",
+            "  sleep 0.5\n",
+            "done\n",
+            "exit 1\n",
+        ),
+        log = sq(&log),
+        timeout = timeout_secs,
+    );
+    let out = ssh_bash_output(host, &script)?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Render the final screen from raw `pipe-pane` output.
+///
+/// The log is a raw terminal *stream*: claude redraws its status in place with
+/// cursor-up + erase sequences, so every frame accumulates in the file. Feeding
+/// it through a vt100 emulator replays those redraws and leaves only the final
+/// frame — exactly what a terminal would show — and resolves OSC 8 hyperlinks
+/// to their visible labels. Rendered at the detached pane size claude drew at.
+/// Trailing blank lines and per-line trailing spaces are trimmed.
+pub fn render_screen(raw: &str) -> String {
+    let mut parser = vt100::Parser::new(DETACHED_HEIGHT, DETACHED_WIDTH, 0);
+    parser.process(raw.as_bytes());
+    let contents = parser.screen().contents();
+    let lines: Vec<&str> = contents.lines().map(|l| l.trim_end()).collect();
+    // Drop fully-blank rows at the top and bottom of the screen.
+    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
+    let end = lines.iter().rposition(|l| !l.is_empty()).map_or(0, |i| i + 1);
+    lines[start..end.max(start)].join("\n")
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -319,8 +396,15 @@ mod tests {
         let script = remote_loop_script("myhost", "jeru-proj", "/remote/proj", "session", None, "proj");
         // Script is meant to be run via `sh`.
         assert!(script.starts_with("#!/bin/sh\n"), "script: {script}");
-        // Runs claude inside a remote tmux session via new-session -A.
-        assert!(script.contains("tmux new-session -A -s"), "script: {script}");
+        // Creates the remote session detached, on a pinned socket so all remote
+        // tmux commands hit the same server. Uses `env` because the SSH command
+        // goes through the login shell (which may be fish — no `VAR=val cmd`).
+        assert!(script.contains("env TMUX_TMPDIR=/tmp tmux -L jeru new-session -d -s"), "script: {script}");
+        // Logs the pane to a file via pipe-pane (capture-pane is unusable on
+        // some tmux builds) and then attaches.
+        assert!(script.contains("pipe-pane -t"), "script: {script}");
+        assert!(script.contains("cat >> /tmp/jeru-proj.log"), "script: {script}");
+        assert!(script.contains("attach -t"), "script: {script}");
         assert!(script.contains("jeru-proj"), "script: {script}");
         assert!(script.contains("remote-control --name"), "script: {script}");
         assert!(script.contains("--spawn session"), "script: {script}");
@@ -331,6 +415,29 @@ mod tests {
         // No tunnel when mcp is None.
         assert!(!script.contains("-R "), "script: {script}");
         assert!(!script.contains("OBSIDIAN_API_KEY"), "script: {script}");
+    }
+
+    #[test]
+    fn render_screen_strips_escapes_and_preserves_utf8() {
+        let raw = "\u{1b}[?2004h\u{1b}[1m·✔︎· Connected · toto\u{1b}[0m\r\n";
+        assert_eq!(render_screen(raw), "·✔︎· Connected · toto");
+    }
+
+    #[test]
+    fn render_screen_collapses_in_place_redraws() {
+        // claude redraws its status with cursor-up + erase-display between
+        // frames. Only the final frame should survive.
+        let raw = "\u{1b}[33mConnecting\u{1b}[39m\r\n\
+                   \u{1b}[1A\u{1b}[JConnected v1\r\n\
+                   \u{1b}[1A\u{1b}[JConnected v2\r\n";
+        assert_eq!(render_screen(raw), "Connected v2");
+    }
+
+    #[test]
+    fn render_screen_resolves_osc8_hyperlink_to_label() {
+        // OSC 8 hyperlink: ESC ]8;;URL BEL <label> ESC ]8;; BEL → keep label.
+        let raw = "\u{1b}]8;;https://example.com/x\u{07}mavis@dgx\u{1b}]8;;\u{07}\r\n";
+        assert_eq!(render_screen(raw), "mavis@dgx");
     }
 
     #[test]

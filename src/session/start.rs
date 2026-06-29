@@ -9,10 +9,10 @@ use crate::mcp::mcp_host_port;
 use crate::project::{init_claude_md, load_manifest};
 use crate::remote::{
     DirDiff, McpTunnel, SyncOptions, SyncPairs, build_sync_pairs, claude_local_cmd,
-    remote_add_dirs, remote_capture_pane, remote_check_empty, remote_cleanup, remote_compare,
+    remote_add_dirs, remote_check_empty, remote_cleanup, remote_compare,
     remote_home, remote_kill_tmux, remote_loop_script, remote_loop_tmux_cmd, remote_mkdirs,
-    remote_repos_dirs,
-    remote_rm_dirs, remote_tmux_name, remote_write_file, remote_write_settings, sq,
+    remote_poll_capture, remote_repos_dirs,
+    remote_rm_dirs, remote_tmux_name, remote_write_file, remote_write_settings, render_screen, sq,
     tmux_capture_pane, tmux_has_session, tmux_name, tmux_new_detached, tmux_new_window,
     tmux_respawn_window, vscode_remote_uri, mutagen_start, write_remote_loop_script,
 };
@@ -204,6 +204,12 @@ fn start_remote(
     write_remote_loop_script(&script_path, &script)?;
     let claude_cmd = remote_loop_tmux_cmd(&script_path);
 
+    // Kill any stale remote tmux session left from a previous run (e.g. an
+    // interrupted `session down`).  Without this, the loop script's
+    // `tmux new-session -d` would no-op against the old session instead of
+    // creating a fresh one with claude, and we'd attach to a dead pane.
+    remote_kill_tmux(host, &remote_tmux)?;
+
     // Detached local tmux: a `sync` window monitoring mutagen and a `claude`
     // window holding the self-reconnecting ssh into the remote tmux.
     let monitor_cmd = format!("mutagen sync monitor --label-selector jeru-project={project}");
@@ -213,19 +219,21 @@ fn start_remote(
 
     let vscode_target = remote_workspace.unwrap_or_else(|| remote_cwd.clone());
     let vscode_url = vscode_remote_uri(host, &vscode_target);
-    // claude runs in the remote tmux; capture its pane over ssh once it boots.
-    // The `; exec sh` fallback in the loop script keeps that session alive after a
-    // trust error, so its output stays readable here instead of being erased by
-    // the reconnect loop.
-    let raw = poll_capture(|| remote_capture_pane(host, &remote_tmux));
-    let output = if raw.as_deref().is_some_and(is_trust_error) {
+    // Read claude's output from the remote pipe-pane log over a single SSH
+    // connection (the polling loop runs on the remote, so only one round-trip
+    // is paid). The raw log is a terminal stream; render it to the final screen.
+    let raw = render_screen(&remote_poll_capture(host, &remote_tmux, 30)?);
+    let output = if is_trust_error(&raw) {
         handle_remote_trust(host, &remote_cwd)?;
         // Kill the now-idle remote session so the reconnect loop relaunches
         // claude — this time in the trusted directory.
         remote_kill_tmux(host, &remote_tmux)?;
-        poll_capture(|| remote_capture_pane(host, &remote_tmux))
+        let text = render_screen(&remote_poll_capture(host, &remote_tmux, 30)?);
+        if text.trim().is_empty() { None } else { Some(text) }
+    } else if raw.trim().is_empty() {
+        None
     } else {
-        raw
+        Some(raw)
     };
 
     let state = SessionState {
