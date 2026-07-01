@@ -22,8 +22,6 @@ use super::state::{SessionState, now_epoch, session_id};
 
 /// Options controlling how a session is started.
 pub struct StartOptions {
-    /// `claude remote-control --spawn` mode (e.g. "same-dir").
-    pub spawn: String,
     /// Work only on repos (claude opens in the first repo; only repos synced).
     pub repos: bool,
     /// Do not sync resources (remote only).
@@ -32,6 +30,8 @@ pub struct StartOptions {
     pub no_cleanup: bool,
     /// Delete non-empty remote directories at startup instead of aborting.
     pub override_remote: bool,
+    /// Start a fresh conversation instead of resuming the most recent one.
+    pub fresh: bool,
 }
 
 /// Start a session for `project`, locally or on `remote`.
@@ -66,7 +66,7 @@ fn start_local(
     let launch = prepare_local_session(config, project, opts.repos)?;
     let cwd = launch.cwd.to_string_lossy().into_owned();
 
-    let cmd = claude_local_cmd(&cwd, &opts.spawn, launch.token.as_deref(), id);
+    let cmd = claude_local_cmd(&cwd, launch.token.as_deref(), id, opts.fresh);
     println!("Launching session '{id}' in tmux…");
     // If claude exits immediately (e.g. the workspace-trust error), `exec sh`
     // keeps the pane alive so its output stays readable for trust detection
@@ -94,7 +94,6 @@ fn start_local(
         id: id.to_string(),
         project: project.to_string(),
         remote: None,
-        spawn: opts.spawn.clone(),
         tmux: tmux.to_string(),
         remote_tmux: None,
         mutagen_sessions: Vec::new(),
@@ -199,7 +198,7 @@ fn start_remote(
 
     let tunnel = build_mcp_tunnel(config);
     let remote_tmux = remote_tmux_name(project);
-    let script = remote_loop_script(host, &remote_tmux, &remote_cwd, &opts.spawn, tunnel.as_ref(), id);
+    let script = remote_loop_script(host, &remote_tmux, &remote_cwd, tunnel.as_ref(), id, opts.fresh);
     let script_path = SessionState::dir(config).join(format!("{tmux}-remote-loop.sh"));
     write_remote_loop_script(&script_path, &script)?;
     let claude_cmd = remote_loop_tmux_cmd(&script_path);
@@ -240,7 +239,6 @@ fn start_remote(
         id: id.to_string(),
         project: project.to_string(),
         remote: Some(host.to_string()),
-        spawn: opts.spawn.clone(),
         tmux: tmux.to_string(),
         remote_tmux: Some(remote_tmux),
         mutagen_sessions: pairs.all().iter().map(|p| p.session.clone()).collect(),

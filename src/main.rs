@@ -156,9 +156,6 @@ enum SessionCommand {
         /// SSH host to run the session on remotely (e.g. user@hostname)
         #[arg(long)]
         remote: Option<String>,
-        /// claude remote-control spawn mode
-        #[arg(long, value_enum, default_value_t = SpawnArg::SameDir)]
-        spawn: SpawnArg,
         /// Work only on repos: claude opens in the first repo, only repos synced remotely
         #[arg(long)]
         repos: bool,
@@ -174,6 +171,9 @@ enum SessionCommand {
         /// local and conflicts are resolved interactively.
         #[arg(long, requires = "remote")]
         override_remote: bool,
+        /// Start a fresh conversation instead of resuming the most recent one
+        #[arg(long)]
+        fresh: bool,
     },
     /// List active sessions
     Ls,
@@ -202,23 +202,6 @@ enum SessionCommand {
         #[arg(add = ArgValueCompleter::new(session_ids))]
         id: Option<String>,
     },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum SpawnArg {
-    SameDir,
-    Worktree,
-    Session,
-}
-
-impl SpawnArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            SpawnArg::SameDir => "same-dir",
-            SpawnArg::Worktree => "worktree",
-            SpawnArg::Session => "session",
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -379,19 +362,19 @@ fn run_session(config: &Config, action: SessionCommand) -> jeru::Result<()> {
         SessionCommand::Up {
             name,
             remote,
-            spawn,
             repos,
             no_resources,
             no_cleanup,
             override_remote,
+            fresh,
         } => {
             let project = jeru::resolve_project(config, name)?;
             let opts = jeru::SessionStartOptions {
-                spawn: spawn.as_str().to_string(),
                 repos,
                 no_resources,
                 no_cleanup,
                 override_remote,
+                fresh,
             };
             session::start(config, &project, remote.as_deref(), &opts)
         }

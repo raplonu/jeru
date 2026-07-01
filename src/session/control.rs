@@ -104,7 +104,6 @@ pub fn print_session_info(state: &SessionState) {
     };
     println!("Session '{}' [{status}]", state.id);
     println!("  Scope:   {scope}");
-    println!("  Spawn:   {}", state.spawn);
     println!("  Age:     {}", human_age(state.started_at));
     println!("  VSCode:  {}", crate::vscode::osc8_link(&state.vscode_url));
     match &state.claude_output {

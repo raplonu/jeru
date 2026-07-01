@@ -18,8 +18,6 @@ pub struct SessionState {
     pub project: String,
     /// SSH host for a remote session; `None` for local.
     pub remote: Option<String>,
-    /// `claude remote-control --spawn` mode.
-    pub spawn: String,
     /// Local tmux session name (sanitised id).
     pub tmux: String,
     /// Remote tmux session name (remote sessions only).
@@ -166,7 +164,6 @@ mod tests {
             id: id.to_string(),
             project: project.to_string(),
             remote: remote.map(String::from),
-            spawn: "same-dir".to_string(),
             tmux: tmux_name(id),
             remote_tmux: remote.map(|_| format!("jeru-{project}")),
             mutagen_sessions: vec!["jeru-x".to_string()],
