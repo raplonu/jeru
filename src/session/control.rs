@@ -123,6 +123,7 @@ pub fn print_session_info(state: &SessionState) {
 /// Attach to (or switch to) a session's local tmux. Blocks until detach.
 pub fn inspect(config: &Config, query: &str) -> Result<()> {
     let state = SessionState::find(config, query)?;
+    crate::vscode::open_url(&state.vscode_url);
     tmux_attach(&state.tmux)
 }
 

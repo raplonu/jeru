@@ -86,6 +86,19 @@ pub fn code_folder(dir: &Path) -> Command {
     cmd
 }
 
+/// Open a VSCode URI non-interactively (fire-and-forget).
+///
+/// Works for both `vscode://file/…` (local) and `vscode://vscode-remote/…`
+/// (remote SSH) URIs. Errors are silently ignored — VSCode opening is best-effort.
+pub fn open_url(url: &str) {
+    let _ = Command::new(CODE_BIN)
+        .args(["--folder-uri", url])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// Wrap `url` in an OSC 8 terminal hyperlink escape sequence.
 ///
 /// Custom URI schemes like `vscode://` or `vscode-remote://` are often not

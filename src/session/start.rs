@@ -92,6 +92,7 @@ fn start_local(
         started_at: now_epoch(),
     };
     state.save(config)?;
+    crate::vscode::open_url(&state.vscode_url);
     report(&state);
     tmux_attach(tmux)?;
     Ok(())
@@ -230,6 +231,7 @@ fn start_remote(
         started_at: now_epoch(),
     };
     state.save(config)?;
+    crate::vscode::open_url(&state.vscode_url);
     report(&state);
     Ok(())
 }
