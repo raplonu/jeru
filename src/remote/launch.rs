@@ -66,17 +66,22 @@ pub struct McpTunnel {
 
 /// The shell command that launches `claude` for a *local* session,
 /// to be used as a tmux window command.
+///
+/// Runs claude in a restart loop so it stays up as long as the tmux session
+/// lives. Without `--fresh`, tries `--continue` first; if claude exits non-zero
+/// (e.g. "no prior session to continue"), falls back to a plain launch.
 pub fn claude_local_cmd(cwd: &str, token: Option<&str>, name: &str, fresh: bool) -> String {
     let env = match token {
         Some(t) => format!("OBSIDIAN_API_KEY={} ", sq(t)),
         None => String::new(),
     };
-    let continue_flag = if fresh { "" } else { " --continue" };
-    format!(
-        "cd {cwd} && {env}{CLAUDE_BIN} --name {name}{continue_flag}",
-        cwd = sq(cwd),
-        name = sq(name),
-    )
+    let run = format!("{env}{CLAUDE_BIN} --name {}", sq(name));
+    let cd = format!("cd {}", sq(cwd));
+    if fresh {
+        format!("{cd} && while true; do {run}; sleep 1; done")
+    } else {
+        format!("{cd} && while true; do if ! {run} --continue; then {run}; fi; sleep 1; done")
+    }
 }
 
 /// The shell script for a *remote* session's tmux window: a self-reconnecting
@@ -102,16 +107,16 @@ pub fn remote_loop_script(
         Some(token) => format!("OBSIDIAN_API_KEY={} ", sq(token)),
         None => String::new(),
     };
-    // `; exec sh`: if claude exits immediately (e.g. the workspace-trust error),
-    // keep the remote tmux session alive with a fallback shell so its output
-    // stays in the pipe-pane log — otherwise the session dies, ssh drops, and
-    // the loop respawns claude forever, erasing the error before it's seen.
-    let continue_flag = if fresh { "" } else { " --continue" };
-    let claude = format!(
-        "cd {rp} && {env}{CLAUDE_BIN} --name {name}{continue_flag}; exec sh",
-        rp = sq(remote_project_path),
-        name = sq(name),
-    );
+    // Restart loop keeps claude running inside the remote tmux session.
+    // Without `fresh`, tries --continue first; falls back to a plain launch if
+    // claude exits non-zero (e.g. "no prior session to continue").
+    let run = format!("{env}{CLAUDE_BIN} --name {}", sq(name));
+    let rp = sq(remote_project_path);
+    let claude = if fresh {
+        format!("cd {rp} && while true; do {run}; sleep 1; done")
+    } else {
+        format!("cd {rp} && while true; do if ! {run} --continue; then {run}; fi; sleep 1; done")
+    };
     let log = remote_log_path(remote_tmux);
     // Three tmux commands sequenced with `;` (no shell control flow, so this
     // parses identically under sh and the remote login shell, which may be
@@ -383,19 +388,23 @@ mod tests {
         let cmd = claude_local_cmd("/home/u/proj", Some("secret"), "proj", false);
         assert!(cmd.contains("cd '/home/u/proj'"), "cmd: {cmd}");
         assert!(cmd.contains("OBSIDIAN_API_KEY='secret'"), "cmd: {cmd}");
-        assert!(cmd.contains("claude --name 'proj' --continue"), "cmd: {cmd}");
+        assert!(cmd.contains("while true"), "cmd: {cmd}");
+        assert!(cmd.contains("--continue"), "cmd: {cmd}");
+        assert!(cmd.contains("claude --name 'proj'"), "cmd: {cmd}");
     }
 
     #[test]
     fn local_cmd_without_token_omits_env() {
         let cmd = claude_local_cmd("/home/u/proj", None, "proj", false);
         assert!(!cmd.contains("OBSIDIAN_API_KEY"), "cmd: {cmd}");
-        assert!(cmd.contains("claude --name 'proj' --continue"), "cmd: {cmd}");
+        assert!(cmd.contains("while true"), "cmd: {cmd}");
+        assert!(cmd.contains("--continue"), "cmd: {cmd}");
     }
 
     #[test]
     fn local_cmd_fresh_omits_continue() {
         let cmd = claude_local_cmd("/home/u/proj", None, "proj", true);
+        assert!(cmd.contains("while true"), "cmd: {cmd}");
         assert!(cmd.contains("claude --name 'proj'"), "cmd: {cmd}");
         assert!(!cmd.contains("--continue"), "cmd: {cmd}");
     }
@@ -417,8 +426,8 @@ mod tests {
         assert!(script.contains("jeru-proj"), "script: {script}");
         assert!(script.contains("claude --name"), "script: {script}");
         assert!(script.contains("--continue"), "script: {script}");
-        // Fallback shell keeps the remote session alive if claude exits (trust error).
-        assert!(script.contains("; exec sh"), "script: {script}");
+        // Restart loop keeps claude running inside the remote tmux session.
+        assert!(script.contains("while true"), "script: {script}");
         // Self-reconnecting loop.
         assert!(script.contains("while true"), "script: {script}");
         // No tunnel when mcp is None.

@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use crate::config::Config;
 use crate::constants::WORKSPACE_EXT;
 use crate::error::{Error, Result};
@@ -11,10 +9,9 @@ use crate::remote::{
     DirDiff, McpTunnel, SyncOptions, SyncPairs, build_sync_pairs, claude_local_cmd,
     remote_add_dirs, remote_check_empty, remote_cleanup, remote_compare,
     remote_home, remote_kill_tmux, remote_loop_script, remote_loop_tmux_cmd, remote_mkdirs,
-    remote_poll_capture, remote_repos_dirs,
-    remote_rm_dirs, remote_tmux_name, remote_write_file, remote_write_settings, render_screen, sq,
-    tmux_capture_pane, tmux_has_session, tmux_name, tmux_new_detached, tmux_new_window,
-    tmux_respawn_window, vscode_remote_uri, mutagen_start, write_remote_loop_script,
+    remote_repos_dirs, remote_rm_dirs, remote_tmux_name, remote_write_file, remote_write_settings,
+    tmux_attach, tmux_has_session, tmux_name, tmux_new_detached, tmux_new_window,
+    vscode_remote_uri, mutagen_start, write_remote_loop_script,
 };
 
 use super::conflicts::{self, Resolution};
@@ -68,10 +65,7 @@ fn start_local(
 
     let cmd = claude_local_cmd(&cwd, launch.token.as_deref(), id, opts.fresh);
     println!("Launching session '{id}' in tmux…");
-    // If claude exits immediately (e.g. the workspace-trust error), `exec sh`
-    // keeps the pane alive so its output stays readable for trust detection
-    // instead of the lone window — and the whole session — dying instantly.
-    tmux_new_detached(tmux, "claude", &format!("{cmd}; exec sh"))?;
+    tmux_new_detached(tmux, "claude", &cmd)?;
 
     // Prefer opening the generated `.code-workspace` (lists all repos) over
     // the bare project folder; fall back when the project has no repos.
@@ -83,12 +77,6 @@ fn start_local(
     // `windowId=_blank` tells VSCode to open the folder in a new window
     // instead of reusing an existing one.
     let vscode_url = format!("vscode://file{target}?windowId=_blank");
-    let raw = poll_capture(|| tmux_capture_pane(&format!("{tmux}:claude")));
-    let output = if raw.as_deref().is_some_and(is_trust_error) {
-        handle_local_trust(&cwd, tmux, &cmd)?
-    } else {
-        raw
-    };
 
     let state = SessionState {
         id: id.to_string(),
@@ -100,11 +88,12 @@ fn start_local(
         remote_dirs: Vec::new(),
         no_cleanup: false,
         vscode_url,
-        claude_output: output.clone(),
+        claude_output: None,
         started_at: now_epoch(),
     };
     state.save(config)?;
     report(&state);
+    tmux_attach(tmux)?;
     Ok(())
 }
 
@@ -218,22 +207,6 @@ fn start_remote(
 
     let vscode_target = remote_workspace.unwrap_or_else(|| remote_cwd.clone());
     let vscode_url = vscode_remote_uri(host, &vscode_target);
-    // Read claude's output from the remote pipe-pane log over a single SSH
-    // connection (the polling loop runs on the remote, so only one round-trip
-    // is paid). The raw log is a terminal stream; render it to the final screen.
-    let raw = render_screen(&remote_poll_capture(host, &remote_tmux, 30)?);
-    let output = if is_trust_error(&raw) {
-        handle_remote_trust(host, &remote_cwd)?;
-        // Kill the now-idle remote session so the reconnect loop relaunches
-        // claude — this time in the trusted directory.
-        remote_kill_tmux(host, &remote_tmux)?;
-        let text = render_screen(&remote_poll_capture(host, &remote_tmux, 30)?);
-        if text.trim().is_empty() { None } else { Some(text) }
-    } else if raw.trim().is_empty() {
-        None
-    } else {
-        Some(raw)
-    };
 
     let state = SessionState {
         id: id.to_string(),
@@ -253,7 +226,7 @@ fn start_remote(
             .collect(),
         no_cleanup: opts.no_cleanup,
         vscode_url,
-        claude_output: output.clone(),
+        claude_output: None,
         started_at: now_epoch(),
     };
     state.save(config)?;
@@ -316,51 +289,6 @@ fn report(state: &SessionState) {
     super::control::print_session_info(state);
 }
 
-fn is_trust_error(output: &str) -> bool {
-    output.contains(crate::constants::WORKSPACE_TRUST_ERROR)
-}
-
-/// Spawn `claude` interactively in `cwd` so the user can accept workspace
-/// trust, then relaunch the original `remote-control` command in the pane.
-fn handle_local_trust(cwd: &str, tmux: &str, original_cmd: &str) -> Result<Option<String>> {
-    eprintln!("\nWorkspace not trusted. Launching `claude` for trust acceptance (exit when done)…");
-    std::process::Command::new(crate::constants::CLAUDE_BIN)
-        .current_dir(cwd)
-        .status()?;
-    // Respawn the (still-alive, shell-backed) pane with a fresh screen so the
-    // stale trust error isn't recaptured before claude redraws.
-    let target = format!("{tmux}:claude");
-    tmux_respawn_window(&target, &format!("{original_cmd}; exec sh"))?;
-    Ok(poll_capture(|| tmux_capture_pane(&target)))
-}
-
-/// SSH into `host` and run `claude` interactively in `remote_cwd` so the user
-/// can accept workspace trust. Blocks until the user exits Claude.
-fn handle_remote_trust(host: &str, remote_cwd: &str) -> Result<()> {
-    eprintln!("\nWorkspace not trusted on remote. Connecting to {host} for trust acceptance (exit when done)…");
-    let cmd = format!("cd {} && {}", sq(remote_cwd), crate::constants::CLAUDE_BIN);
-    std::process::Command::new("ssh")
-        .args(["-t", host, &cmd])
-        .status()?;
-    Ok(())
-}
-
-/// Poll a capture closure until it yields non-empty output or ~30s elapse.
-fn poll_capture(mut capture: impl FnMut() -> Result<String>) -> Option<String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Ok(text) = capture()
-            && !text.trim().is_empty()
-        {
-            return Some(text);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
-
 /// Build the reverse-tunnel description for remote Obsidian MCP access.
 ///
 /// Returns `None` when MCP is disabled. Emits non-fatal warnings if the local
@@ -396,22 +324,3 @@ pub fn build_mcp_tunnel(config: &Config) -> Option<McpTunnel> {
     Some(McpTunnel { host, port, token })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_real_trust_error() {
-        // The exact message `claude remote-control` prints in an untrusted dir.
-        let output = "Error: Workspace not trusted. Please run `claude` in \
-                      /home/u/project/toto first to review and accept the \
-                      workspace trust dialog.";
-        assert!(is_trust_error(output));
-    }
-
-    #[test]
-    fn ignores_normal_startup_output() {
-        let output = "·✔︎· Connected · toto · HEAD\n    Capacity: 1/32";
-        assert!(!is_trust_error(output));
-    }
-}

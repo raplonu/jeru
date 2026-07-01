@@ -7,7 +7,6 @@ pub use launch::{
     tmux_has_session, tmux_kill_session, tmux_name, tmux_new_detached, tmux_new_window,
     tmux_respawn_window, vscode_remote_uri, write_remote_loop_script,
 };
-pub(crate) use launch::sq;
 pub use sync::{
     DirDiff, SyncOptions, SyncPair, SyncPairs, build_sync_pairs, mutagen_start, mutagen_stop,
     mutagen_terminate, remote_add_dirs, remote_check_empty, remote_cleanup, remote_compare,
